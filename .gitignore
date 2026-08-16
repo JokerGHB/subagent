@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+
+# 密钥（绝不提交）
+.env
+
+# 数据 / 输出
+output/
+*.sqlite3
+*.db
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,34 @@
+"""LangGraph 共享状态：图里所有节点读写的数据结构。
+
+学习要点：
+- TypedDict 定义状态形状；节点 return 的 dict 会被合并进状态。
+- Annotated[..., operator.add] 叫「reducer（归约器）」：
+  节点返回新列表时不是覆盖，而是【追加】。
+  这是多 Agent 并行的关键——多个搜索节点各自返回结果，最后全被拼进 sources。
+"""
+from typing import Annotated, TypedDict
+
+import operator
+
+
+class Subtask(TypedDict):
+    """规划 Agent 产出的一个调研子任务。"""
+    id: str
+    topic: str          # 子主题
+    intent: str         # 要搜集什么信息
+
+
+class Source(TypedDict):
+    """一条搜索来源。"""
+    url: str
+    title: str
+    snippet: str
+    credibility: float  # 域名可信度 0~1（P1 填）
+
+
+class ResearchState(TypedDict):
+    topic: str
+    subtasks: Annotated[list[Subtask], operator.add]
+    sources: Annotated[list[Source], operator.add]
+    status: str
+    report: str
