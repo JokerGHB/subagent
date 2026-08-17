@@ -20,10 +20,11 @@ class Subtask(TypedDict):
 
 class Source(TypedDict):
     """一条搜索来源。"""
+    subtask_id: str      # 由哪个子任务搜出
     url: str
     title: str
     snippet: str
-    credibility: float  # 域名可信度 0~1（P1 填）
+    credibility: float   # 域名可信度 0~1
 
 
 class ResearchState(TypedDict):

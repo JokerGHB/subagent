@@ -10,4 +10,10 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
     "tavily-python>=0.7.27",
+    "trafilatura>=2.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
 ]
