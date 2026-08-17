@@ -1,4 +1,4 @@
-"""P1 入口：真实规划 + 并行搜索。
+"""P2 入口：规划 → 并行搜索 → 去重 → 并行抽取。
 
 运行: uv run python run.py "调研主题"（不传主题则用默认示例）
 """
@@ -15,6 +15,7 @@ def main() -> None:
             "topic": topic,
             "subtasks": [],
             "sources": [],
+            "facts": [],
             "status": "",
             "report": "",
         }
@@ -24,10 +25,20 @@ def main() -> None:
     print(f"topic   : {result['topic']}")
     print(f"子任务数 : {len(result['subtasks'])}")
     print(f"来源数   : {len(result['sources'])}")
+    print(f"事实数   : {len(result['facts'])}")
     print(f"status  : {result['status']}")
-    print("\n--- 来源列表 ---")
-    for s in result["sources"]:
+
+    print("\n--- 来源列表（前 5 条）---")
+    for s in result["sources"][:5]:
         print(f"  [可信度 {s['credibility']}] {s['title']} | {s['url']}")
+    if len(result["sources"]) > 5:
+        print(f"  ... 其余 {len(result['sources']) - 5} 条")
+
+    print("\n--- 抽取的事实（前 10 条）---")
+    for f in result["facts"][:10]:
+        print(f"  [{f.confidence:.1f}] {f.dimension}: {f.value}{f.unit} ({f.time}) | {f.source_url[:50]}")
+    if len(result["facts"]) > 10:
+        print(f"  ... 其余 {len(result['facts']) - 10} 条")
 
 
 if __name__ == "__main__":

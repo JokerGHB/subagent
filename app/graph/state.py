@@ -9,6 +9,8 @@
 import operator
 from typing import Annotated, TypedDict
 
+from app.models.schemas import Fact
+
 
 class Replace:
     """整体替换标记：包住列表传给 reducer 表示「替换」而不是「追加」。
@@ -54,9 +56,15 @@ class Source(TypedDict):
     credibility: float   # 域名可信度 0~1
 
 
+class ExtractorInput(TypedDict):
+    """Send 扇出时，单个 extractor 收到的载荷：只含一个来源。"""
+    source: Source
+
+
 class ResearchState(TypedDict):
     topic: str
     subtasks: Annotated[list[Subtask], operator.add]
     sources: Annotated[list[Source], merge_or_append]
+    facts: Annotated[list[Fact], operator.add]
     status: str
     report: str

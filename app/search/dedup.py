@@ -6,6 +6,8 @@
 - 纯函数、无外部依赖 —— 所以能用单元测试锁住行为（见 tests/test_dedup.py）。
 """
 import re
+from collections.abc import Mapping, Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 # 高可信域名（示例，可扩展）：政务 / 权威机构
@@ -46,8 +48,12 @@ def credibility_score(url: str) -> float:
     return 0.6
 
 
-def dedup_sources(sources: list[dict]) -> list[dict]:
-    """按 URL 指纹 + 归一化标题去重，保留可信度高的那条，按可信度降序。"""
+def dedup_sources(sources: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """按 URL 指纹 + 归一化标题去重，保留可信度高的那条，按可信度降序。
+
+    用 Sequence[Mapping] 而非 list[dict]：Sequence 是协变的，能同时接受
+    list[dict] 和 list[Source]（TypedDict 本质是 Mapping）。
+    """
     seen_url, seen_title = set(), set()
     ordered = sorted(sources, key=lambda s: s.get("credibility", 0.6), reverse=True)
     result = []
