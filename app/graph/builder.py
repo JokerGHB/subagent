@@ -8,6 +8,7 @@
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
+from app.graph.nodes.merge import merge_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.searcher import searcher_node
 from app.graph.state import ResearchState
@@ -21,8 +22,10 @@ def fan_out_searchers(state: ResearchState) -> list[Send]:
 builder = StateGraph(ResearchState)
 builder.add_node("planner", planner_node)
 builder.add_node("searcher", searcher_node)
+builder.add_node("merge", merge_node)
 builder.add_edge(START, "planner")
 builder.add_conditional_edges("planner", fan_out_searchers, ["searcher"])
-builder.add_edge("searcher", END)
+builder.add_edge("searcher", "merge")
+builder.add_edge("merge", END)
 
 graph = builder.compile()

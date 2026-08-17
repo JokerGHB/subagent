@@ -10,6 +10,24 @@ import operator
 from typing import Annotated, TypedDict
 
 
+class Replace:
+    """整体替换标记：包住列表传给 reducer 表示「替换」而不是「追加」。
+
+    学习点：LangGraph 的 reducer 是纯函数 (current, update) -> new。
+    并行节点返回普通 list 表示追加；merge 汇总节点用 Replace 表示整体替换。
+    """
+
+    def __init__(self, items: list) -> None:
+        self.items = items
+
+
+def merge_or_append(current: list, update) -> list:
+    """sources 的自定义 reducer：普通 list 追加，Replace 整体替换。"""
+    if isinstance(update, Replace):
+        return update.items
+    return current + update
+
+
 class Subtask(TypedDict):
     """规划 Agent 产出的一个调研子任务。"""
     id: str
@@ -39,6 +57,6 @@ class Source(TypedDict):
 class ResearchState(TypedDict):
     topic: str
     subtasks: Annotated[list[Subtask], operator.add]
-    sources: Annotated[list[Source], operator.add]
+    sources: Annotated[list[Source], merge_or_append]
     status: str
     report: str

@@ -23,12 +23,12 @@ class Settings(BaseSettings):
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     # 模型分级：按 Agent 角色选择不同档位的 Qwen
-    llm_planner: str = "qwen-plus"
-    llm_searcher: str = "qwen-flash"
-    llm_extractor: str = "qwen-flash"
-    llm_analyzer: str = "qwen-plus"
-    llm_writer: str = "qwen-max"
-    llm_judge: str = "qwen-max"
+    llm_planner: str = "qwen3.7-flash"
+    llm_searcher: str = "qwen3.7-flash"
+    llm_extractor: str = "qwen3.7-flash"
+    llm_analyzer: str = "qwen3.7-plus"
+    llm_writer: str = "qwen3.7-max"
+    llm_judge: str = "qwen3.7-max"
 
     # ---- 搜索 ----
     tavily_api_key: str = ""
