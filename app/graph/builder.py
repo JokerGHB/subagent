@@ -35,6 +35,19 @@ def fan_out_extractors(state: ResearchState) -> list[Send]:
     return [Send("extractor", {"source": s}) for s in state["sources"]]
 
 
+def build_initial_state(topic: str) -> dict:
+    """构造图的初始状态。CLI（run.py）和 MCP server 共用，避免两处手写漂移。"""
+    return {
+        "topic": topic,
+        "subtasks": [],
+        "sources": [],
+        "facts": [],
+        "key_points": [],
+        "status": "",
+        "report": "",
+    }
+
+
 builder = StateGraph(ResearchState)
 builder.add_node("planner", planner_node)
 builder.add_node("searcher", searcher_node)

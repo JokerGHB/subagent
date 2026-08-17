@@ -6,11 +6,15 @@
 - extractor 也走 Send 并行（一个来源一个分支），和 searcher 同理。
 - 抽取失败或内容为空时优雅降级返回空列表，不拖垮整个流程。
 """
+import logging
+
 from app.graph.prompts import EXTRACTOR_PROMPT
 from app.graph.state import ExtractorInput, Source
 from app.models.llm import get_extractor_llm
 from app.models.schemas import ExtractionResult
 from app.scraping.trafilatura_client import fetch_page_text
+
+logger = logging.getLogger("research.nodes.extractor")
 
 
 def _get_content(source: Source) -> str:
@@ -27,7 +31,7 @@ def extractor_node(state: ExtractorInput) -> dict:
     source = state["source"]
     content = _get_content(source)
     if not content:
-        print(f"[extractor] 无内容可抽取: {source['url'][:40]}")
+        logger.info("无内容可抽取: %s", source["url"][:40])
         return {"facts": []}
 
     llm = get_extractor_llm().with_structured_output(ExtractionResult)
@@ -39,12 +43,12 @@ def extractor_node(state: ExtractorInput) -> dict:
     try:
         result: ExtractionResult = llm.invoke(prompt)
     except Exception as e:  # noqa: BLE001 - 边界容错：任何模型/网络错误都不拖垮整个流程
-        print(f"[extractor] 抽取失败 {source['url'][:40]}: {type(e).__name__}")
+        logger.warning("抽取失败 %s: %s", source["url"][:40], type(e).__name__)
         return {"facts": []}
 
     for f in result.facts:
         f.source_url = source["url"]
-    print(f"[extractor] {source['url'][:40]} 抽取 {len(result.facts)} 条事实")
+    logger.info("%s 抽取 %s 条事实", source["url"][:40], len(result.facts))
     # 注意：这里只返回 facts，不碰 status —— status 是 LastValue 通道，
     # 并行分支同一轮都写它会报错（InvalidUpdateError）。进度标记只由
     # 汇聚点节点（merge/analyzer）更新。

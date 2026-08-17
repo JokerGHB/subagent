@@ -4,23 +4,15 @@
 """
 import sys
 
-from app.graph.builder import graph
+from app.graph.builder import build_initial_state, graph
+from app.logging_config import setup_logging
 
 
 def main() -> None:
+    setup_logging()
     topic = sys.argv[1] if len(sys.argv) > 1 else "国产大模型市场分析"
 
-    result = graph.invoke(
-        {
-            "topic": topic,
-            "subtasks": [],
-            "sources": [],
-            "facts": [],
-            "key_points": [],
-            "status": "",
-            "report": "",
-        }
-    )
+    result = graph.invoke(build_initial_state(topic))
 
     print("\n=== 最终状态 ===")
     print(f"topic   : {result['topic']}")

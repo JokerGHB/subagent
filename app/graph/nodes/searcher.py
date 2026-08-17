@@ -5,15 +5,19 @@
   返回的 sources 靠 reducer 拼回全局状态——"各干各的，结果汇总"。
 - Tavily 免费档返回的 content 片段 P1 阶段够用，完整抓取留到 P2。
 """
+import logging
+
 from app.graph.state import SearcherInput
 from app.search.dedup import credibility_score, dedup_sources
 from app.search.tavily import search
+
+logger = logging.getLogger("research.nodes.searcher")
 
 
 def searcher_node(state: SearcherInput) -> dict:
     subtask = state["subtask"]
     query = subtask["topic"]
-    print(f"[searcher] 搜索子任务[{subtask['id']}]: {query}")
+    logger.info("搜索子任务[%s]: %s", subtask["id"], query)
 
     results = search(query)
     sources = [
@@ -29,5 +33,5 @@ def searcher_node(state: SearcherInput) -> dict:
     ]
 
     deduped = dedup_sources(sources)
-    print(f"[searcher] 去重后 {len(deduped)}/{len(sources)} 条来源")
+    logger.info("去重后 %s/%s 条来源", len(deduped), len(sources))
     return {"sources": deduped}

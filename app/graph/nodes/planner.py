@@ -6,11 +6,14 @@
   做健壮解析；解析失败要兜底，不能直接崩掉整个流程。
 """
 import json
+import logging
 import re
 
 from app.graph.prompts import PLANNER_PROMPT
 from app.graph.state import ResearchState, Subtask
 from app.models.llm import get_planner_llm
+
+logger = logging.getLogger("research.nodes.planner")
 
 
 def _extract_json_array(text: str) -> list:
@@ -31,7 +34,7 @@ def planner_node(state: ResearchState) -> dict:
     raw = response.content
     if not isinstance(raw, str):
         raw = str(raw)
-    print(f"[planner] 模型返回: {raw[:120]}...")
+    logger.info("模型返回: %s...", raw[:120])
 
     try:
         subtasks: list[Subtask] = _extract_json_array(raw)
@@ -39,8 +42,8 @@ def planner_node(state: ResearchState) -> dict:
             raise ValueError("空数组")
     except ValueError as e:
         # 兜底：拆不动就整主题当成一个子任务，保证流程不断
-        print(f"[planner] JSON 解析失败，回退为单个子任务: {e}")
+        logger.warning("JSON 解析失败，回退为单个子任务: %s", e)
         subtasks = [{"id": "1", "topic": topic, "intent": "综合调研"}]
 
-    print(f"[planner] 拆出 {len(subtasks)} 个子任务")
+    logger.info("拆出 %s 个子任务", len(subtasks))
     return {"subtasks": subtasks, "status": "planned"}

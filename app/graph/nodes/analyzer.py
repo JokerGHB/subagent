@@ -7,11 +7,15 @@
   再喂给模型，避免海量输入稀释注意力、也省 token。
 - 模型可能编造来源 URL，代码在最后做「溯源兜底」：只保留真实出现过的 URL。
 """
+import logging
+
 from app.analysis.grouping import group_facts_by_dimension, select_top_facts
 from app.graph.prompts import ANALYZER_PROMPT
 from app.graph.state import ResearchState
 from app.models.llm import get_analyzer_llm
 from app.models.schemas import AnalysisResult
+
+logger = logging.getLogger("research.nodes.analyzer")
 
 
 def _build_digest(state: ResearchState) -> str:
@@ -32,7 +36,7 @@ def _build_digest(state: ResearchState) -> str:
 
 def analyzer_node(state: ResearchState) -> dict:
     if not state["facts"]:
-        print("[analyzer] 无事实可分析")
+        logger.warning("无事实可分析")
         return {"key_points": [], "status": "analyzed"}
 
     llm = get_analyzer_llm().with_structured_output(AnalysisResult)
@@ -40,7 +44,7 @@ def analyzer_node(state: ResearchState) -> dict:
     try:
         result: AnalysisResult = llm.invoke(prompt)
     except Exception as e:  # noqa: BLE001 - 边界容错：分析失败也不拖垮流程
-        print(f"[analyzer] 分析失败: {type(e).__name__}")
+        logger.warning("分析失败: %s", type(e).__name__)
         return {"key_points": [], "status": "analyzed"}
 
     # 溯源兜底：模型可能编造 URL，只保留真实出现在事实列表里的来源
@@ -51,5 +55,5 @@ def analyzer_node(state: ResearchState) -> dict:
         if kp.conflict.strip().lower() in {"", "无", "无冲突", "无矛盾", "无分歧", "none"}:
             kp.conflict = ""
 
-    print(f"[analyzer] 产出 {len(result.key_points)} 个关键数据点")
+    logger.info("产出 %s 个关键数据点", len(result.key_points))
     return {"key_points": result.key_points, "status": "analyzed"}
