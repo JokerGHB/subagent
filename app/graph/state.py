@@ -6,9 +6,8 @@
   节点返回新列表时不是覆盖，而是【追加】。
   这是多 Agent 并行的关键——多个搜索节点各自返回结果，最后全被拼进 sources。
 """
-from typing import Annotated, TypedDict
-
 import operator
+from typing import Annotated, TypedDict
 
 
 class Subtask(TypedDict):
@@ -16,6 +15,16 @@ class Subtask(TypedDict):
     id: str
     topic: str          # 子主题
     intent: str         # 要搜集什么信息
+
+
+class SearcherInput(TypedDict):
+    """Send 并行扇出时，单个 searcher 收到的载荷（只含自己的子任务）。
+
+    学习点：节点通过 Send 被调用时，收到的不是完整 ResearchState，
+    而是你传给 Send 的那个 dict —— 所以每个节点应有自己明确的输入类型，
+    而不是笼统地标成 ResearchState。
+    """
+    subtask: Subtask
 
 
 class Source(TypedDict):

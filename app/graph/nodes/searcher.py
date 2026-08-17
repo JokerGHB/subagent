@@ -5,12 +5,12 @@
   返回的 sources 靠 reducer 拼回全局状态——"各干各的，结果汇总"。
 - Tavily 免费档返回的 content 片段 P1 阶段够用，完整抓取留到 P2。
 """
-from app.graph.state import ResearchState
+from app.graph.state import SearcherInput
 from app.search.dedup import credibility_score, dedup_sources
 from app.search.tavily import search
 
 
-def searcher_node(state: ResearchState) -> dict:
+def searcher_node(state: SearcherInput) -> dict:
     subtask = state["subtask"]
     query = subtask["topic"]
     print(f"[searcher] 搜索子任务[{subtask['id']}]: {query}")

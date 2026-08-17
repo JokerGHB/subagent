@@ -27,14 +27,17 @@ def planner_node(state: ResearchState) -> dict:
     topic = state["topic"]
     llm = get_planner_llm()
     response = llm.invoke(PLANNER_PROMPT.format(topic=topic))
+    # AIMessage.content 可能是 str 也可能是内容块列表，统一转成 str
     raw = response.content
-    print(f"[planner] 模型返回: {str(raw)[:120]}...")
+    if not isinstance(raw, str):
+        raw = str(raw)
+    print(f"[planner] 模型返回: {raw[:120]}...")
 
     try:
         subtasks: list[Subtask] = _extract_json_array(raw)
         if not subtasks:
             raise ValueError("空数组")
-    except Exception as e:
+    except ValueError as e:
         # 兜底：拆不动就整主题当成一个子任务，保证流程不断
         print(f"[planner] JSON 解析失败，回退为单个子任务: {e}")
         subtasks = [{"id": "1", "topic": topic, "intent": "综合调研"}]

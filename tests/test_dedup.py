@@ -2,7 +2,12 @@
 
 运行: uv run pytest tests/ -v
 """
-from app.search.dedup import credibility_score, dedup_sources, normalize_title, url_fingerprint
+from app.search.dedup import (
+    credibility_score,
+    dedup_sources,
+    normalize_title,
+    url_fingerprint,
+)
 
 
 def test_url_fingerprint_normalizes_www_and_slash():
