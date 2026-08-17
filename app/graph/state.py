@@ -9,7 +9,7 @@
 import operator
 from typing import Annotated, TypedDict
 
-from app.models.schemas import Fact
+from app.models.schemas import Fact, KeyPoint
 
 
 class Replace:
@@ -66,5 +66,6 @@ class ResearchState(TypedDict):
     subtasks: Annotated[list[Subtask], operator.add]
     sources: Annotated[list[Source], merge_or_append]
     facts: Annotated[list[Fact], operator.add]
+    key_points: list[KeyPoint]  # analyzer 串行跑一次，整体覆盖（不需要 reducer）
     status: str
     report: str

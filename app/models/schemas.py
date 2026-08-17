@@ -20,3 +20,21 @@ class Fact(BaseModel):
 class ExtractionResult(BaseModel):
     """单个来源的抽取结果：一组事实。"""
     facts: list[Fact] = Field(default_factory=list)
+
+
+class KeyPoint(BaseModel):
+    """分析 Agent 产出的一个关键数据点（多来源交叉验证后的结论）。"""
+    dimension: str            # 维度，如"市场规模"（统一表述）
+    value: float              # 共识值（纯数字，float 强制）
+    unit: str = ""            # 单位，如"亿元"、"%"
+    time: str = ""            # 时间/年份
+    source_count: int = 1     # 几条来源互相印证
+    sources: list[str] = Field(default_factory=list)  # 印证来源 URL（溯源）
+    quote: str = ""           # 最可信来源的原文摘录
+    conflict: str = ""        # 冲突/口径差异说明；无冲突填空
+    confidence: float = 0.5   # 综合置信度 0~1
+
+
+class AnalysisResult(BaseModel):
+    """分析 Agent 的整体输出：一组关键数据点。"""
+    key_points: list[KeyPoint] = Field(default_factory=list)

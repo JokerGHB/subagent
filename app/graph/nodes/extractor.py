@@ -45,5 +45,7 @@ def extractor_node(state: ExtractorInput) -> dict:
     for f in result.facts:
         f.source_url = source["url"]
     print(f"[extractor] {source['url'][:40]} 抽取 {len(result.facts)} 条事实")
-    # 各 extractor 分支都置成同值，最后写者生效，整体即"抽取完成"
-    return {"facts": result.facts, "status": "extracted"}
+    # 注意：这里只返回 facts，不碰 status —— status 是 LastValue 通道，
+    # 并行分支同一轮都写它会报错（InvalidUpdateError）。进度标记只由
+    # 汇聚点节点（merge/analyzer）更新。
+    return {"facts": result.facts}
