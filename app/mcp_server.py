@@ -23,9 +23,9 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
-from app.graph.builder import build_initial_state, graph
 from app.logging_config import setup_logging
 from app.search.tavily import search
+from app.service import invoke_research, serialize_result
 
 logger = logging.getLogger("research.mcp")
 
@@ -47,8 +47,8 @@ async def _run_research(job_id: str, topic: str) -> None:
     """在事件循环后台跑完整调研流程，完成后写回注册表。"""
     job = RESEARCH_JOBS[job_id]
     try:
-        # graph.invoke 是阻塞调用，丢给线程池跑，不卡事件循环
-        result = await asyncio.to_thread(graph.invoke, build_initial_state(topic))
+        # invoke_research 是阻塞调用，丢给线程池跑，不卡事件循环
+        result = await asyncio.to_thread(invoke_research, topic)
         job["status"] = "done"
         job["result"] = result
         job["summary"] = {
@@ -64,18 +64,6 @@ async def _run_research(job_id: str, topic: str) -> None:
 
 
 # ---------- 渲染 ----------
-
-def _result_to_dict(result: dict) -> dict:
-    """把图的最终状态序列化成纯 dict（Pydantic 模型转掉）。"""
-    return {
-        "topic": result["topic"],
-        "status": result["status"],
-        "subtasks": result["subtasks"],
-        "sources": result["sources"],
-        "facts": [f.model_dump() for f in result["facts"]],
-        "key_points": [kp.model_dump() for kp in result["key_points"]],
-    }
-
 
 def _render_keypoints_markdown(result: dict) -> str:
     """把关键数据点渲染成人可读的 Markdown 报告。"""
@@ -210,7 +198,7 @@ async def research_get_result(
         )
     result = job["result"]
     if response_format == ResponseFormat.JSON:
-        return json.dumps(_result_to_dict(result), ensure_ascii=False, indent=2)
+        return json.dumps(serialize_result(result), ensure_ascii=False, indent=2)
     return _render_keypoints_markdown(result)
 
 

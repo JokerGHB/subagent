@@ -10,6 +10,7 @@ build/
 
 # 数据 / 输出
 output/
+data/
 *.sqlite3
 *.db
 

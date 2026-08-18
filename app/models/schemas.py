@@ -38,3 +38,21 @@ class KeyPoint(BaseModel):
 class AnalysisResult(BaseModel):
     """分析 Agent 的整体输出：一组关键数据点。"""
     key_points: list[KeyPoint] = Field(default_factory=list)
+
+
+class MetricScore(BaseModel):
+    """评测单个指标的打分。"""
+    score: int = Field(ge=1, le=5)  # 1~5，5 最好
+    reason: str = ""                # 具体理由，引用数据点佐证
+
+
+class JudgeResult(BaseModel):
+    """评测 Agent 的输出：4 个指标 + 综合评价。
+
+    用四个显式字段而非自由列表，强制模型四个都填，结构稳定。
+    """
+    relevance: MetricScore          # 相关性：贴合主题
+    groundedness: MetricScore       # 可溯源性：有原文+URL 支撑
+    completeness: MetricScore       # 覆盖度：关键维度是否齐全
+    conflict_handling: MetricScore  # 冲突处理：冲突标注而非硬合并
+    overall: str = ""               # 一段综合评价

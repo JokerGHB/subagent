@@ -4,18 +4,20 @@
 """
 import sys
 
-from app.graph.builder import build_initial_state, graph
 from app.logging_config import setup_logging
+from app.service import invoke_research
 
 
 def main() -> None:
     setup_logging()
     topic = sys.argv[1] if len(sys.argv) > 1 else "国产大模型市场分析"
 
-    result = graph.invoke(build_initial_state(topic))
+    # 统一入口：带观测跑图 + 结果落盘 data/last_result.json
+    result = invoke_research(topic)
 
     print("\n=== 最终状态 ===")
     print(f"topic   : {result['topic']}")
+    print("结果已保存: data/last_result.json（评测脚本可复用）")
     print(f"子任务数 : {len(result['subtasks'])}")
     print(f"来源数   : {len(result['sources'])}")
     print(f"事实数   : {len(result['facts'])}")
