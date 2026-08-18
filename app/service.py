@@ -16,6 +16,7 @@ from config.settings import settings
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 RESULT_FILE = DATA_DIR / "last_result.json"
+REPORT_FILE = DATA_DIR / "report.md"
 
 
 def _langfuse_callback() -> Any:
@@ -45,12 +46,17 @@ def serialize_result(result: dict) -> dict:
 
 
 def save_result(result: dict) -> Path:
-    """把结果落盘到 data/last_result.json，供评测脚本复用（不重复跑调研）。"""
+    """把结果落盘，供评测脚本复用（不重复跑调研）。
+
+    - data/last_result.json：全量结构化结果（评测用）
+    - data/report.md：报告单独存成 Markdown 文件，可直接拿去用/演示
+    """
     DATA_DIR.mkdir(exist_ok=True)
     RESULT_FILE.write_text(
         json.dumps(serialize_result(result), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    REPORT_FILE.write_text(result.get("report", ""), encoding="utf-8")
     return RESULT_FILE
 
 

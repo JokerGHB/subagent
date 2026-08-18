@@ -8,6 +8,7 @@
 - 用最强的 qwen-max：整轮只调用一次，贵得有道理（输出质量决定 Demo 效果）。
 """
 import logging
+from typing import cast
 
 from app.graph.prompts import WRITER_PROMPT
 from app.graph.state import ResearchState
@@ -67,11 +68,16 @@ def writer_node(state: ResearchState) -> dict:
         key_points=_format_key_points(state),
     )
     try:
-        report: Report = llm.invoke(prompt)
+        # cast：langchain 的 with_structured_output 返回类型标注不准，运行时是 Report
+        report = cast(Report, llm.invoke(prompt))
     except Exception as e:  # noqa: BLE001 - 报告失败也不拖垮流程
         logger.warning("报告生成失败: %s", type(e).__name__)
         return {"report": "", "status": "written"}
 
     md = render_report_markdown(report)
-    logger.info("报告生成完成（%s 字，%s 个小节）", len(md), len(report.sections))
+    length = len(md)
+    logger.info("报告生成完成（%s 字，%s 个小节）", length, len(report.sections))
+    # 兜底提示：prompt 要求 800~1000 字，明显超标就提醒（不强行截断，避免破坏 Markdown 结构）
+    if length > 1300:
+        logger.warning("报告 %s 字，超出 800~1000 字目标较多，可检查 WRITER_PROMPT 字数约束", length)
     return {"report": md, "status": "written"}
