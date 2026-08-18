@@ -6,6 +6,7 @@
 - 以后想换模型厂商（如 Claude），只需改 base_url + model，业务代码不动。
 """
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from config.settings import settings
 
@@ -14,7 +15,8 @@ def _chat(model: str, temperature: float = 0.2) -> ChatOpenAI:
     """构造一个指向百炼兼容端点的 ChatOpenAI 客户端。"""
     return ChatOpenAI(
         model=model,
-        api_key=settings.dashscope_api_key,
+        # 新版 langchain 把 api_key 类型标成 SecretStr；pydantic 的 SecretStr 正是为密钥设计
+        api_key=SecretStr(settings.dashscope_api_key),
         base_url=settings.dashscope_base_url,
         temperature=temperature,
     )

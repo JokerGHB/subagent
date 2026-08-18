@@ -7,10 +7,11 @@
 - 四个指标对应系统的核心卖点：可溯源（防幻觉）、冲突标注、覆盖度。
 """
 import logging
+from typing import cast
 
 from app.graph.prompts import JUDGE_PROMPT
 from app.models.llm import get_judge_llm
-from app.models.schemas import JudgeResult
+from app.models.schemas import JudgeResult, MetricScore
 
 logger = logging.getLogger("research.eval.judge")
 
@@ -39,15 +40,18 @@ def judge_result(result: dict, topic: str) -> JudgeResult:
         key_points=format_key_points(result),
     )
     try:
-        jr: JudgeResult = llm.invoke(prompt)
+        # cast：with_structured_output 的返回类型标注是 _DictOrPydantic，
+        # 运行时实际是 JudgeResult（静态检查器看不到这一点）
+        jr = cast(JudgeResult, llm.invoke(prompt))
     except Exception as e:  # noqa: BLE001 - 评测失败不拖垮流程
         logger.warning("评测失败: %s", type(e).__name__)
         # 构造一个全 0 的占位结果，调用方打印时能看出评测失败
+        reason = f"评测失败: {type(e).__name__}"
         return JudgeResult(
-            relevance={"score": 0, "reason": f"评测失败: {type(e).__name__}"},
-            groundedness={"score": 0, "reason": ""},
-            completeness={"score": 0, "reason": ""},
-            conflict_handling={"score": 0, "reason": ""},
+            relevance=MetricScore(score=0, reason=reason),
+            groundedness=MetricScore(score=0, reason=""),
+            completeness=MetricScore(score=0, reason=""),
+            conflict_handling=MetricScore(score=0, reason=""),
             overall="评测失败，无法打分",
         )
     return jr
