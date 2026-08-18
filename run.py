@@ -36,15 +36,16 @@ def main() -> None:
     if len(result["facts"]) > 10:
         print(f"  ... 其余 {len(result['facts']) - 10} 条")
 
-    print("\n--- 关键数据点 ---")
-    for kp in result["key_points"]:
-        flag = f"  ⚠️ {kp.conflict}" if kp.conflict else ""
-        print(f"  [{kp.confidence:.1f}] {kp.dimension}: {kp.value}{kp.unit} "
-              f"({kp.time}) 印证 {kp.source_count} 源{flag}")
-        if kp.quote:
-            print(f"      原文: {kp.quote[:60]}")
-        for u in kp.sources[:2]:
-            print(f"      来源: {u}")
+    print("\n--- 最终调研报告 ---")
+    if result["report"]:
+        print(result["report"])
+    else:
+        print("（报告为空，writer 阶段未产出）")
+        print("\n--- 关键数据点 ---")
+        for kp in result["key_points"]:
+            flag = f"  ⚠️ {kp.conflict}" if kp.conflict else ""
+            print(f"  [{kp.confidence:.1f}] {kp.dimension}: {kp.value}{kp.unit} "
+                  f"({kp.time}) 印证 {kp.source_count} 源{flag}")
 
 
 if __name__ == "__main__":

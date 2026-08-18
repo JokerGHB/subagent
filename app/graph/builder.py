@@ -1,4 +1,4 @@
-"""P3 图：规划 → 并行搜索 → 全局去重 → 并行抽取 → 数据分析。
+"""完整图：规划 → 并行搜索 → 全局去重 → 并行抽取 → 数据分析 → 报告。
 
 完整链路：
   planner（模型拆任务）
@@ -6,13 +6,14 @@
    → merge（全局去重）
    → Send 扇出 extractor×M（每来源结构化抽取）
    → analyzer（对全部事实交叉验证、找共识）
+   → writer（把关键数据点写成正式 Markdown 报告）
    → END
 
 学习点：
 - 两级 Send 扇出：任务级（按子任务并行搜索）+ 来源级（按来源并行抽取），
   这是「Map → Reduce → Map」的流水线。
-- analyzer 是扇出后的隐式汇聚点：extractor 分支全跑完才会进它，
-  所以它能看到完整 facts（LangGraph 自带 join）。
+- analyzer / writer 是扇出后的隐式汇聚点：extractor 分支全跑完才会进它们，
+  所以它们能看到完整 facts / key_points（LangGraph 自带 join）。
 """
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
@@ -22,6 +23,7 @@ from app.graph.nodes.extractor import extractor_node
 from app.graph.nodes.merge import merge_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.searcher import searcher_node
+from app.graph.nodes.writer import writer_node
 from app.graph.state import ResearchState
 
 
@@ -54,12 +56,14 @@ builder.add_node("searcher", searcher_node)
 builder.add_node("merge", merge_node)
 builder.add_node("extractor", extractor_node)
 builder.add_node("analyzer", analyzer_node)
+builder.add_node("writer", writer_node)
 
 builder.add_edge(START, "planner")
 builder.add_conditional_edges("planner", fan_out_searchers, ["searcher"])
 builder.add_edge("searcher", "merge")
 builder.add_conditional_edges("merge", fan_out_extractors, ["extractor"])
 builder.add_edge("extractor", "analyzer")
-builder.add_edge("analyzer", END)
+builder.add_edge("analyzer", "writer")
+builder.add_edge("writer", END)
 
 graph = builder.compile()

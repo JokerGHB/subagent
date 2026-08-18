@@ -40,6 +40,7 @@ def serialize_result(result: dict) -> dict:
         "sources": result["sources"],
         "facts": [f.model_dump() for f in result["facts"]],
         "key_points": [kp.model_dump() for kp in result["key_points"]],
+        "report": result["report"],
     }
 
 
