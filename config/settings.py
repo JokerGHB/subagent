@@ -32,7 +32,13 @@ class Settings(BaseSettings):
 
     # ---- 搜索 ----
     tavily_api_key: str = ""
-    tavily_max_results: int = 5
+    # 每个子任务最多返回的来源数 —— 它直接决定 extractor 的调用次数
+    # （每个来源调一次抽取模型），是 token 成本的最大旋钮。
+    tavily_max_results: int = 3
+
+    # ---- 信息抽取 ----
+    # 喂给抽取模型的正文长度上限：越长，输入 token 越多。截断够用即可。
+    extractor_max_chars: int = 1500
 
     # ---- 观测 ----
     langfuse_public_key: str = ""

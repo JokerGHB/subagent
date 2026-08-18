@@ -13,18 +13,24 @@ from app.graph.state import ExtractorInput, Source
 from app.models.llm import get_extractor_llm
 from app.models.schemas import ExtractionResult
 from app.scraping.trafilatura_client import fetch_page_text
+from config.settings import settings
 
 logger = logging.getLogger("research.nodes.extractor")
 
 
 def _get_content(source: Source) -> str:
-    """优先用 Tavily 返回的 snippet；太短则尝试抓取正文（最多 2000 字）。"""
+    """优先用 Tavily 返回的 snippet；太短则尝试抓取正文。
+
+    长度上限由 settings.extractor_max_chars 控制：正文喂给抽取模型就是输入
+    token，越短越省。snippet 够长就完全不用抓正文，连 HTTP 请求都省了。
+    """
+    max_chars = settings.extractor_max_chars
     text = source.get("snippet", "")
     if len(text) < 100:
         fetched = fetch_page_text(source["url"])
         if fetched:
-            return fetched[:2000]
-    return text[:2000]
+            return fetched[:max_chars]
+    return text[:max_chars]
 
 
 def extractor_node(state: ExtractorInput) -> dict:
