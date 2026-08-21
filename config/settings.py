@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_host: str = "http://localhost:3000"
 
+    # ---- 缓存（Redis）----
+    # 同主题调研缓存：命中直接秒回，省 token。Docker 里用 redis://redis:6379/0。
+    redis_url: str = "redis://localhost:6379/0"
+    cache_ttl_base: int = 86400      # 缓存基础 TTL（24h）
+    cache_ttl_jitter: int = 1800     # TTL 抖动范围 ±30 分钟，防雪崩（各主题过期时刻错开）
+    cache_empty_ttl: int = 300       # 空值缓存 TTL（5 分钟），防穿透（无结果主题不反复打 LLM）
+    cache_lock_ttl: int = 300        # 重建互斥锁 TTL（5 分钟自动过期，防死锁），防击穿
+
 
 # 全局单例：任何模块 import settings 都拿到同一个实例
 settings = Settings()

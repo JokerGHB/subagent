@@ -147,6 +147,8 @@ Claude Desktop / Cursor 中配置（stdio 方式）：
 | `tavily_max_results = 3` | 来源数 ~20 → ~12，抽取调用降 ~40% |
 | `extractor_max_chars = 1500` | 限制喂给抽取模型的正文长度 |
 | snippet ≥100 字不抓正文 | 连 HTTP 请求都省 |
+| Redis 同主题缓存（24h + 抖动） | 命中直接秒回，0 token 成本 |
+| 空值缓存 + 互斥锁 | 防穿透/击穿：无结果主题不反复打、热点并发只跑一次 |
 | 结果落盘复用 | 评测不再重跑 3 分钟调研 |
 | 抓取失败免费重试（LLM 调用绝不重试） | 把「整页白抓」救回来，不额外花钱 |
 
@@ -160,14 +162,29 @@ app/
   scraping/         # 网页正文抽取（trafilatura，带重试）
   analysis/         # 数据点分组/选优（纯函数）
   eval/             # LLM-as-a-Judge 评测
-  service.py        # 统一入口：调用 + Langfuse 观测 + 结果落盘
+  storage/          # db.py SQLite 历史 + cache.py Redis 缓存（穿透/击穿/雪崩防护）
+  service.py        # 统一入口：缓存编排 + Langfuse 观测 + 落盘 + 历史
   mcp_server.py     # MCP 封装（FastMCP，stdio）
+  api.py            # FastAPI HTTP 层（异步 job + 历史接口）
+  static/index.html # 极简前端（原生 JS，无构建）
   logging_config.py # 日志走 stderr（MCP stdio 协议通道是 stdout，不能污染）
 scripts/
   eval_research.py  # 评测脚本
-tests/              # 16 个离线单测（不调用大模型）
+tests/              # 40 个离线单测（不调用大模型）
 ```
+
+## HTTP 部署（P9）
+
+FastAPI + 极简前端 + Docker 一键起，浏览器访问：
+
+```bash
+docker compose up -d --build   # 自动创建 app + redis 两个容器
+# 浏览器打开 http://localhost:8000
+# 密钥在 config/.env（运行时注入，不进镜像）；SQLite 数据挂载 ./data 卷
+```
+
+详细部署步骤（阿里云免费试用）见 [DEPLOY.md](DEPLOY.md)。
 
 ## 技术栈
 
-LangGraph · 阿里云百炼 Qwen（langchain-openai）· Pydantic v2 · Tavily · trafilatura · FastMCP · Langfuse · ruff / pytest / uv
+LangGraph · 阿里云百炼 Qwen（langchain-openai）· Pydantic v2 · Tavily · trafilatura · FastMCP · Langfuse · SQLite · Redis · FastAPI · Docker · ruff / pytest / uv

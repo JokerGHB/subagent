@@ -1,0 +1,26 @@
+# 一键起服务：docker compose up -d
+# - redis：缓存（app 通过内部网络 redis://redis:6379/0 访问）
+# - app：FastAPI（浏览器访问 http://localhost:8000）
+# 本地只跑 Redis（调试缓存）就：docker compose up -d redis
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 开发时想本机直连 Redis 就打开下面这行；生产不需要暴露
+    # ports:
+    #   - "6379:6379"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - redis
+    # .env 注入全部密钥；REDIS_URL 显式覆盖为容器内部地址
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    volumes:
+      # SQLite 历史库持久化到宿主机，重建容器不丢
+      - ./data:/app/data

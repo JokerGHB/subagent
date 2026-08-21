@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多 Agent 调研系统</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         background: #f4f6f8; color: #1f2328; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { margin-bottom: 20px; }
+  header h1 { font-size: 22px; }
+  header p { color: #57606a; font-size: 13px; margin-top: 4px; }
+  .card { background: #fff; border: 1px solid #e1e4e8; border-radius: 10px;
+          padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .row { display: flex; gap: 10px; align-items: center; }
+  input[type=text] { flex: 1; padding: 10px 12px; border: 1px solid #d0d7de;
+          border-radius: 8px; font-size: 14px; }
+  button { padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer;
+          background: #2da44e; color: #fff; font-size: 14px; font-weight: 600; }
+  button:hover { background: #2c974b; }
+  button:disabled { background: #94d3a2; cursor: not-allowed; }
+  label.force { font-size: 13px; color: #57606a; display: flex; gap: 6px; align-items: center; }
+  .status { margin-top: 12px; font-size: 13px; color: #57606a; }
+  .report { margin-top: 12px; }
+  .report h1, .report h2, .report h3 { margin: 16px 0 8px; }
+  .report h1 { font-size: 20px; } .report h2 { font-size: 17px; }
+  .report h3 { font-size: 15px; }
+  .report p { margin: 8px 0; }
+  .report ul { margin: 8px 0 8px 22px; }
+  .report a { color: #0969da; }
+  h2.section { font-size: 16px; margin-bottom: 10px; }
+  .history-item { display: flex; justify-content: space-between; gap: 12px;
+          padding: 10px 12px; border: 1px solid #e1e4e8; border-radius: 8px;
+          margin-bottom: 8px; background: #fafbfc; cursor: pointer; }
+  .history-item:hover { border-color: #0969da; }
+  .history-item .topic { font-weight: 600; font-size: 14px; }
+  .history-item .meta { font-size: 12px; color: #57606a; text-align: right; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px;
+         margin-left: 6px; }
+  .tag.done { background: #dafbe1; color: #1a7f37; }
+  .tag.empty { background: #fff8c5; color: #9a6700; }
+  .tag.error { background: #ffebe9; color: #cf222e; }
+  .hidden { display: none; }
+  .err { color: #cf222e; font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🔍 多 Agent 调研系统</h1>
+    <p>规划 → 并行搜索 → 抽取 → 分析 → 报告 · SQLite 历史 + Redis 缓存</p>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <input id="topic" type="text" placeholder="输入调研主题，如：国产大模型市场分析" value="">
+      <label class="force"><input id="force" type="checkbox"> 强制刷新（忽略缓存）</label>
+      <button id="submitBtn" onclick="submit()">开始调研</button>
+    </div>
+    <div id="status" class="status"></div>
+    <div id="err" class="err hidden"></div>
+    <div id="report" class="report hidden"></div>
+  </div>
+
+  <div class="card">
+    <h2 class="section">📚 调研历史（点击查看报告）</h2>
+    <div id="history"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    let detail = "请求失败";
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return res;
+}
+
+// 极简 Markdown 渲染：标题 / 列表 / 粗体 / 链接，够演示用
+function inline(s) {
+  return s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+function renderMarkdown(md) {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let html = "", inList = false;
+  const close = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (const raw of md.split("\n")) {
+    const t = raw.trim();
+    if (t.startsWith("### ")) { close(); html += `<h3>${inline(esc(t.slice(4)))}</h3>`; }
+    else if (t.startsWith("## ")) { close(); html += `<h2>${inline(esc(t.slice(3)))}</h2>`; }
+    else if (t.startsWith("# ")) { close(); html += `<h1>${inline(esc(t.slice(2)))}</h1>`; }
+    else if (t.startsWith("- ")) { if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${inline(esc(t.slice(2)))}</li>`; }
+    else if (t === "") { close(); }
+    else { close(); html += `<p>${inline(esc(t))}</p>`; }
+  }
+  close();
+  return html;
+}
+
+function showReport(md) {
+  $("report").innerHTML = renderMarkdown(md || "（报告为空）");
+  $("report").classList.remove("hidden");
+}
+function showErr(msg) {
+  $("err").textContent = "⚠ " + msg;
+  $("err").classList.remove("hidden");
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function submit() {
+  const topic = $("topic").value.trim();
+  const force = $("force").checked;
+  $("err").classList.add("hidden");
+  $("report").classList.add("hidden");
+  if (topic.length < 2) { showErr("主题至少 2 个字"); return; }
+  $("submitBtn").disabled = true;
+  $("status").textContent = "发起调研…";
+
+  try {
+    const res = await api("/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic, force }),
+    });
+    const { job_id } = await res.json();
+
+    // 轮询直到 done / error
+    for (;;) {
+      await sleep(3000);
+      const s = await (await api(`/research/${job_id}`)).json();
+      const sum = s.facts !== undefined
+        ? `（来源 ${s.sources} · 事实 ${s.facts} · 关键点 ${s.key_points}）` : "";
+      $("status").textContent = `状态：${s.status}${sum}`;
+      if (s.status === "done") break;
+      if (s.status === "error") throw new Error(s.error || "调研失败");
+    }
+    const md = await (await api(`/research/${job_id}/result`)).text();
+    showReport(md);
+    $("status").textContent = "✅ 完成（结果已写入 SQLite 历史）";
+    loadHistory();
+  } catch (e) {
+    showErr(e.message);
+    $("status").textContent = "";
+  } finally {
+    $("submitBtn").disabled = false;
+  }
+}
+
+async function loadHistory() {
+  const el = $("history");
+  try {
+    const rows = await (await api("/history")).json();
+    if (!rows.length) { el.innerHTML = '<p style="color:#57606a;font-size:13px">暂无调研记录</p>'; return; }
+    el.innerHTML = rows.map(r => {
+      const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+      const meta = `${r.created_at} · 事实 ${r.summary ? r.summary.facts : 0}${tag}`;
+      return `<div class="history-item" onclick="openHistory('${r.id}')">
+                <span class="topic">${r.topic}</span>
+                <span class="meta">${meta}</span>
+              </div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = `<p style="color:#cf222e;font-size:13px">历史加载失败：${e.message}</p>`; }
+}
+
+async function openHistory(id) {
+  $("err").classList.add("hidden");
+  try {
+    const md = await (await api(`/research/${id}/result`)).text();
+    showReport(md);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (e) { showErr(e.message); }
+}
+
+loadHistory();
+</script>
+</body>
+</html>

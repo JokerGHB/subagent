@@ -1,0 +1,16 @@
+# 不进镜像的东西
+.venv
+.git
+__pycache__
+*.pyc
+.pytest_cache
+data
+.env
+tests
+.claude
+memory
+Dockerfile
+docker-compose.yml
+DEPLOY.md
+README.md
+计划书.md
