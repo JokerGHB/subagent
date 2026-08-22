@@ -122,10 +122,12 @@ def _run_and_store(topic: str) -> dict:
     db.save_research_record(result)   # SQLite 历史（新增）
 
     serialized = serialize_result(result)
-    if serialized["key_points"]:
-        cache.cache_set(topic, serialized)   # 有产出 → 正常缓存（24h）
+    if serialized["key_points"] and serialized["report"]:
+        cache.cache_set(topic, serialized)   # 有关键点 + 报告 → 正常缓存（24h）
     else:
-        cache.cache_set_empty(topic)         # 无产出 → 空值缓存（5 分钟，防穿透）
+        # 无关键点或报告为空（如 writer 失败）→ 空值缓存（5 分钟，防穿透），
+        # 避免把空报告缓存 24h、下次同主题又命中空结果
+        cache.cache_set_empty(topic)
     return result
 
 

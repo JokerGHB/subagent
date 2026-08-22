@@ -111,8 +111,25 @@ def save_research_record(result: dict, research_id: str | None = None) -> str:
         ),
     )
     conn.commit()
+    prune_history()  # 每次落库后只保留最近 N 条，防止历史无限增长
     logger.info("历史已落库 id=%s topic=%s", rid, result["topic"])
     return rid
+
+
+def prune_history(keep: int = 200) -> int:
+    """只保留最近 keep 条历史，删除更旧的（防磁盘无限增长）。返回删除条数。"""
+    conn = _get_conn()
+    cur = conn.execute(
+        "DELETE FROM research_history WHERE id IN ("
+        "  SELECT id FROM research_history"
+        "  ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?"
+        ")",
+        (keep,),
+    )
+    conn.commit()
+    if cur.rowcount:
+        logger.info("清理历史，保留最近 %s 条，删除 %s 条", keep, cur.rowcount)
+    return cur.rowcount
 
 
 def list_history(limit: int = 20) -> list[dict]:

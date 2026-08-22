@@ -65,6 +65,19 @@ def test_get_research_missing(monkeypatch, tmp_path: Path):
     assert db.get_research("nope") is None
 
 
+def test_prune_history_keeps_newest(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    for i in range(5):
+        db.save_research_record(_result(f"主题{i}"))
+
+    deleted = db.prune_history(keep=3)
+    assert deleted == 2  # 删掉最旧的 2 条
+    history = db.list_history(limit=100)
+    assert len(history) == 3
+    assert [r["topic"] for r in history] == ["主题4", "主题3", "主题2"]
+
+
 def test_init_db_idempotent(monkeypatch, tmp_path: Path):
     db.configure(tmp_path / "t.db")
     db.init_db()

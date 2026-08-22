@@ -16,6 +16,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from enum import Enum
 from typing import Annotated
@@ -33,6 +34,24 @@ mcp = FastMCP("research_mcp")
 
 # 内存任务注册表：job_id -> 任务状态。单进程内存即可，重启即清空。
 RESEARCH_JOBS: dict[str, dict] = {}
+
+# 已结束的 job 保留时长：30 分钟后被清理，防止内存无限增长
+_JOB_RETENTION_SECONDS = 1800
+
+
+def _cleanup_jobs() -> None:
+    """清掉「已结束且超时」的旧 job，防止 RESEARCH_JOBS 无限膨胀（内存泄漏）。"""
+    now = time.time()
+    expired = [
+        jid
+        for jid, job in RESEARCH_JOBS.items()
+        if job["status"] in ("done", "error")
+        and now - job.get("created_at", now) > _JOB_RETENTION_SECONDS
+    ]
+    for jid in expired:
+        RESEARCH_JOBS.pop(jid, None)
+    if expired:
+        logger.info("清理 %s 个已结束的旧任务", len(expired))
 
 
 class ResponseFormat(str, Enum):
@@ -118,8 +137,14 @@ async def research_start(
         - 输入 topic="国产大模型市场分析" → {"job_id": "...", "status": "running"}
         - 不要用于：只想快速搜几条结果（用 research_search_web）
     """
+    _cleanup_jobs()  # 新任务进来前，顺手清掉超时的旧任务
     job_id = uuid.uuid4().hex[:12]
-    RESEARCH_JOBS[job_id] = {"id": job_id, "topic": topic, "status": "running"}
+    RESEARCH_JOBS[job_id] = {
+        "id": job_id,
+        "topic": topic,
+        "status": "running",
+        "created_at": time.time(),
+    }
     asyncio.create_task(_run_research(job_id, topic))
     logger.info("发起调研 job=%s topic=%s", job_id, topic)
     return json.dumps(

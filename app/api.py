@@ -12,6 +12,7 @@
 """
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,6 +31,24 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # 内存任务注册表：job_id -> {id, topic, status, result, summary}（同 MCP server 模式）
 RESEARCH_JOBS: dict[str, dict] = {}
+
+# 已结束的 job 保留时长：30 分钟后被清理，防止内存无限增长
+_JOB_RETENTION_SECONDS = 1800
+
+
+def _cleanup_jobs() -> None:
+    """清掉「已结束且超时」的旧 job，防止 RESEARCH_JOBS 无限膨胀（内存泄漏）。"""
+    now = time.time()
+    expired = [
+        jid
+        for jid, job in RESEARCH_JOBS.items()
+        if job["status"] in ("done", "error")
+        and now - job.get("created_at", now) > _JOB_RETENTION_SECONDS
+    ]
+    for jid in expired:
+        RESEARCH_JOBS.pop(jid, None)
+    if expired:
+        logger.info("清理 %s 个已结束的旧任务", len(expired))
 
 
 class ResearchRequest(BaseModel):
@@ -71,8 +90,14 @@ app = FastAPI(title="Multi-Agent Research API", lifespan=lifespan)
 @app.post("/research", status_code=202)
 async def start_research(req: ResearchRequest) -> dict:
     """发起一次调研，立即返回 job_id；用 GET /research/{job_id} 轮询进度。"""
+    _cleanup_jobs()  # 新任务进来前，顺手清掉超时的旧任务
     job_id = uuid.uuid4().hex[:12]
-    RESEARCH_JOBS[job_id] = {"id": job_id, "topic": req.topic, "status": "running"}
+    RESEARCH_JOBS[job_id] = {
+        "id": job_id,
+        "topic": req.topic,
+        "status": "running",
+        "created_at": time.time(),
+    }
     asyncio.create_task(_run_research(job_id, req.topic, req.force))
     logger.info("发起调研 job=%s topic=%s force=%s", job_id, req.topic, req.force)
     return {"job_id": job_id, "status": "running", "topic": req.topic}

@@ -15,8 +15,8 @@ services:
     restart: unless-stopped
     depends_on:
       - redis
-    # .env 注入全部密钥；REDIS_URL 显式覆盖为容器内部地址
-    env_file: .env
+    # config/.env 注入全部密钥；REDIS_URL 显式覆盖为容器内部地址
+    env_file: ./config/.env
     environment:
       REDIS_URL: redis://redis:6379/0
     ports:

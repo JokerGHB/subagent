@@ -86,3 +86,18 @@ def test_index_serves_frontend(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "多 Agent 调研系统" in resp.text
+
+
+def test_cleanup_jobs_removes_old_finished(monkeypatch):
+    """job 清理：只删「已结束且超时」的，正在跑的和新完成的保留。"""
+    api.RESEARCH_JOBS.clear()
+    now = time.time()
+    api.RESEARCH_JOBS["old_done"] = {"id": "old_done", "status": "done", "created_at": now - 4000}
+    api.RESEARCH_JOBS["new_done"] = {"id": "new_done", "status": "done", "created_at": now}
+    api.RESEARCH_JOBS["running"] = {"id": "running", "status": "running", "created_at": now - 4000}
+
+    api._cleanup_jobs()
+
+    assert "old_done" not in api.RESEARCH_JOBS   # 超时已结束 → 删
+    assert "new_done" in api.RESEARCH_JOBS       # 刚完成 → 保留
+    assert "running" in api.RESEARCH_JOBS        # 还在跑 → 保留

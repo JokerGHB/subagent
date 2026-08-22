@@ -8,6 +8,7 @@
 - 用最强的 qwen-max：整轮只调用一次，贵得有道理（输出质量决定 Demo 效果）。
 """
 import logging
+import re
 from typing import cast
 
 from app.graph.prompts import WRITER_PROMPT
@@ -75,9 +76,18 @@ def writer_node(state: ResearchState) -> dict:
         return {"report": "", "status": "written"}
 
     md = render_report_markdown(report)
-    length = len(md)
-    logger.info("报告生成完成（%s 字，%s 个小节）", length, len(report.sections))
+    length = len(_strip_formatting(md))
+    logger.info("报告生成完成（正文 %s 字，%s 个小节）", length, len(report.sections))
     # 兜底提示：prompt 要求 800~1000 字，明显超标就提醒（不强行截断，避免破坏 Markdown 结构）
     if length > 1300:
-        logger.warning("报告 %s 字，超出 800~1000 字目标较多，可检查 WRITER_PROMPT 字数约束", length)
+        logger.warning("报告正文 %s 字，超出 800~1000 字目标较多，可检查 WRITER_PROMPT 字数约束", length)
     return {"report": md, "status": "written"}
+
+
+def _strip_formatting(md: str) -> str:
+    """统计「有效正文」字数：去掉 URL、Markdown 语法符号和空白。
+
+    之前直接 len(md) 会把 URL（[url](url) 里每个 URL 出现两次）和 # ** 等
+    语法符号全算进去，导致 800~1000 字的目标被虚高成 2000+ 字误报警。
+    """
+    return re.sub(r"https?://\S+|[#*_`\[\]()\-]|\s", "", md)
