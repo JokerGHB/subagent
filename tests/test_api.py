@@ -184,3 +184,33 @@ def test_get_result_increments_view_count(client):
     assert client.get(f"/research/{rid}/result").status_code == 200
     assert client.get(f"/research/{rid}/result").status_code == 200
     assert db.get_research(rid)["view_count"] == 2
+
+
+def test_admin_delete_record(client, monkeypatch):
+    """管理员删除：鉴权（401/403）+ 删除成功 + 已删 404 + total 减 1。"""
+    monkeypatch.setattr(settings, "admin_token", "s3cret")
+    rid = db.save_research_record(fake_invoke("待删主题"))
+    auth = {"Authorization": "Bearer s3cret"}
+
+    # 鉴权：无 token 401、错 token 401、空配置 403
+    assert client.delete(f"/admin/history/{rid}").status_code == 401
+    assert client.delete(
+        f"/admin/history/{rid}", headers={"Authorization": "Bearer wrong"}
+    ).status_code == 401
+    monkeypatch.setattr(settings, "admin_token", "")
+    assert client.delete(
+        f"/admin/history/{rid}", headers={"Authorization": "Bearer s3cret"}
+    ).status_code == 403
+
+    # 正确 token 删除成功
+    monkeypatch.setattr(settings, "admin_token", "s3cret")
+    assert client.get("/admin/history", headers=auth).json()["total"] == 1
+    ok = client.delete(f"/admin/history/{rid}", headers=auth)
+    assert ok.status_code == 200
+    assert ok.json()["deleted"] == 1
+    assert db.get_research(rid) is None
+    assert client.get("/admin/history", headers=auth).json()["total"] == 0
+
+    # 已删 → 404
+    gone = client.delete(f"/admin/history/{rid}", headers=auth)
+    assert gone.status_code == 404

@@ -154,3 +154,13 @@ h2.section {
   font-size: 13px;
   margin-top: 10px;
 }
+/* 管理员列表内的危险操作按钮（覆盖全局 button 的绿色大按钮样式） */
+.btn-danger {
+  padding: 2px 10px;
+  font-size: 12px;
+  background: #cf222e;
+  margin-left: 8px;
+}
+.btn-danger:hover {
+  background: #a40e26;
+}

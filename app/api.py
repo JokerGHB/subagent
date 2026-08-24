@@ -231,6 +231,22 @@ def admin_history(
     return db.list_all(offset=offset, limit=limit, topic=topic)
 
 
+@app.delete("/admin/history/{record_id}")
+def admin_delete_record(request: Request, record_id: str) -> dict:
+    """管理员删除一条历史记录（鉴权同 /admin/history）。
+
+    只删 SQLite 这一行，我的历史 / 热门 Top10 / 管理员全量同时消失。
+    Redis 缓存不清（缓存命中不落历史）。顺手清内存 job：record id 与 job_id
+    已对齐，避免记录删了但 30 分钟内旧 job 仍能从内存取到报告。
+    """
+    _require_admin(request)
+    deleted = db.delete_research_record(record_id)
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    RESEARCH_JOBS.pop(record_id, None)
+    return {"deleted": deleted, "id": record_id}
+
+
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
     """前端页面。"""

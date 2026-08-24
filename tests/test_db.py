@@ -171,3 +171,15 @@ def test_save_research_record_stores_user_id(monkeypatch, tmp_path: Path):
     db.init_db()
     rid = db.save_research_record(_result("归属测试"), user_id="u9")
     assert db.get_research(rid)["user_id"] == "u9"
+
+
+def test_delete_research_record(monkeypatch, tmp_path: Path):
+    """管理员删除：删掉后 get/list 都查不到，再删返回 0（不存在幂等）。"""
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    rid = db.save_research_record(_result("待删主题"))
+
+    assert db.delete_research_record(rid) == 1
+    assert db.get_research(rid) is None
+    assert len(db.list_history()) == 0  # 列表同步消失
+    assert db.delete_research_record(rid) == 0  # 不存在 → 0

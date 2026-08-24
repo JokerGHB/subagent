@@ -273,6 +273,10 @@
           const data = await (
             await api(`/admin/history?${q}`, { headers: adminAuthHeader() })
           ).json();
+          // 删除本页最后一条后可能停在空页 → 钳制回上一页（避免显示"第 3/2 页"）
+          if (adminOffset >= data.total && adminOffset > 0) {
+            adminOffset = Math.max(0, adminOffset - ADMIN_PAGE);
+          }
           const pages = Math.max(1, Math.ceil(data.total / ADMIN_PAGE));
           const page = Math.floor(adminOffset / ADMIN_PAGE) + 1;
           $("adminInfo").textContent =
@@ -293,7 +297,9 @@
                   const tag = `<span class="tag ${r.status}">${r.status}</span>`;
                   return `<div class="history-item" onclick="openHistory('${r.id}')">
                   <span class="topic">${r.topic} <span style="color:#57606a;font-size:12px">[${owner}]</span></span>
-                  <span class="meta">${time} · 👁 ${r.view_count || 0}${tag}</span>
+                  <span class="meta">${time} · 👁 ${r.view_count || 0}${tag}
+                    <button class="btn-danger" onclick="event.stopPropagation(); adminDelete('${r.id}')">删除</button>
+                  </span>
                 </div>`;
                 })
                 .join("") +
@@ -307,6 +313,20 @@
           $("adminBody").classList.remove("hidden");
           $("adminBody").innerHTML =
             `<p style="color:#cf222e;font-size:13px">${e.message}</p>`;
+        }
+      }
+
+      async function adminDelete(id) {
+        if (!confirm("确定删除这条历史记录吗？此操作不可恢复。")) return;
+        try {
+          await api(`/admin/history/${id}`, {
+            method: "DELETE",
+            headers: adminAuthHeader(),
+          });
+          loadAdmin(false); // 刷新当前页
+          loadHot(); // 热门可能变化
+        } catch (e) {
+          alert("删除失败：" + e.message);
         }
       }
 

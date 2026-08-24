@@ -269,3 +269,19 @@ def get_research(research_id: str) -> dict | None:
     d["key_points"] = _loads(d.pop("key_points_json"))
     d["summary"] = _loads(d.get("summary"))
     return d
+
+
+def delete_research_record(research_id: str) -> int:
+    """管理员删除一条历史记录。返回受影响行数（不存在返回 0）。
+
+    只删 SQLite 这一行：我的历史 / 热门 Top10 / 管理员全量都查同一张表，
+    删掉一行三者同时消失。Redis 缓存不清（缓存命中不落历史，与历史表无耦合）。
+    """
+    conn = _get_conn()
+    cur = conn.execute(
+        "DELETE FROM research_history WHERE id = ?", (research_id,)
+    )
+    conn.commit()
+    if cur.rowcount:
+        logger.info("管理员删除历史 id=%s", research_id)
+    return cur.rowcount
