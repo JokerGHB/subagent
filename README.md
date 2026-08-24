@@ -11,6 +11,7 @@
 - **防幻觉设计**：每个数据点强制带原文摘录 + 来源 URL；多来源数值冲突时**标注分歧**而非强行合并。
 - **强类型约束**：抽取/分析结果用 Pydantic 结构化输出，`value` 强制纯数字——类型约束比提示词更可靠。
 - **缓存与记忆**：Redis 同主题缓存命中秒回（省 token，防穿透/击穿/雪崩）；SQLite 持久化历史（自动保留最近 200 条）。
+- **历史与运维**：SQLite 历史按访客区分个人/公共，全站热门 Top10 按打开次数排行，管理员用 `ADMIN_TOKEN` 全量查看与删除。
 - **可观测**：Langfuse trace 完整记录每次 LLM 调用的 prompt / 回复 / token / 耗时 / 费用。
 - **LLM-as-a-Judge 评测**：对产出按可溯源性 / 冲突处理 / 相关性 / 覆盖度打分。
 - **多入口**：CLI、MCP、Web（FastAPI + 极简前端）三端复用同一套流水线。
@@ -45,7 +46,7 @@ merge 汇聚点（跨子任务全局去重）
   │
   ▼
 ┌────────────────────────────────┐
-│ writer  报告 Agent  qwen-plus   │  组装 800~1000 字 Markdown 报告
+│ writer  报告 Agent  qwen-flash  │  组装 800~1000 字 Markdown 报告
 └────────────────────────────────┘
   │
   ▼
@@ -62,10 +63,10 @@ merge 汇聚点（跨子任务全局去重）
 | 搜索 searcher  | Tavily API    | 联网搜索 + 来源可信度打分 + 去重                    |
 | 抽取 extractor | qwen3.7-flash | 网页 → 结构化事实（value 纯数字 / unit / 原文摘录） |
 | 分析 analyzer  | qwen3.7-plus  | 同维度合并、冲突标注、丢弃噪声，输出关键数据点      |
-| 报告 writer    | qwen3.7-plus  | 按 800~1000 字要求组装 Markdown 报告                |
+| 报告 writer    | qwen3.7-flash | 按 800~1000 字要求组装 Markdown 报告                |
 | 评测 judge     | qwen3.7-plus  | 按可溯源性/冲突处理/相关性/覆盖度打分               |
 
-按任务难度分级用模型：flash 干高频重活（搜索/抽取），plus 干关键判断（分析/报告）。> 注：账户未开通 max 档（调用返回 403），所以 writer/judge 用 plus；开通后可在 `config/settings.py` 改回 `qwen3.7-max`。
+按任务难度分级用模型：flash 干高频重活（搜索/抽取/写报告），plus 干关键判断（分析/评测）。> 注：账户未开通 max 档（调用返回 403）。writer 曾用 plus，实测 flash 质量可接受、耗时从 ~104s 降到 ~40s，故降级 flash 省 token；开通 max 后可在 `config/settings.py` 改回 `qwen3.7-max`。
 
 ## 快速开始
 
@@ -91,18 +92,38 @@ docker compose up -d --build   # 自动创建 app + redis 两个容器
 
 ### Web 前端页面
 
-前端就是单个 HTML 文件（`app/static/index.html`，原生 JS + fetch，无构建），浏览器打开即可当"测试网页"用，页面分两块：
+前端是极简页面（`app/static/index.html` + `style.css`，原生 JS + fetch，无构建），浏览器打开即可当"测试网页"用，页面分四块卡片：
 
 **① 提交调研卡片**
 - 输入框：填调研主题（≥2 字）
 - 「强制刷新」复选框：勾上后忽略 Redis 缓存强制重新调研（默认命中缓存直接秒回）
 - 点「开始调研」→ 每 3 秒轮询一次进度（显示 `来源 N · 事实 N · 关键点 N`）→ 完成后自动渲染 Markdown 报告
 
-**② 调研历史卡片**
-- 倒序展示最近 20 条 SQLite 历史（主题 / 本地时区时间 / 事实数 / 状态标签）
-- 点击任意一条回看该次调研的完整报告
+**② 📚 我的调研历史**
+- 浏览器首次访问自动生成访客 ID（localStorage），后续请求带 `X-User-Id` 头
+- 只展示**你自己**发起的调研（倒序），点击任意一条回看完整报告
 
-前端背后就三个 HTTP 接口：`POST /research` 提交 → 轮询 `GET /research/{job_id}` 看进度 → `GET /research/{job_id}/result` 取报告。报告用极简 Markdown 渲染（标题/列表/加粗/链接），演示够用、不引框架。
+**③ 🔥 全站热门 Top10**
+- 按「报告被打开次数」倒序取前 10 条（不足 10 条就几条），前三名标 1/2/3
+- 每次点开报告详情自动 +1 计数
+
+**④ 🛠 管理员入口**
+- 输入 `ADMIN_TOKEN`（环境变量，见部署）→ 全量历史查看（主题过滤 + 分页，标注归属访客/公共）
+- 每行可手动删除该条记录（二次确认）
+
+后端 HTTP 接口：
+
+| 接口 | 说明 |
+|---|---|
+| `POST /research` | 提交调研，返回 job_id（异步执行） |
+| `GET /research/{job_id}` | 轮询进度（running / done / error） |
+| `GET /research/{job_id}/result` | 取报告（markdown / json），记录存在则打开次数 +1 |
+| `GET /history` | 历史列表；带 `X-User-Id` 只返回个人，不带返回全部 |
+| `GET /history/hot` | 全站热门 TopN（默认 10，按打开次数） |
+| `GET /admin/history` | 管理员全量（需 `Authorization: Bearer <ADMIN_TOKEN>`） |
+| `DELETE /admin/history/{id}` | 管理员删除单条（同一鉴权） |
+
+报告用极简 Markdown 渲染（标题/列表/加粗/链接），演示够用、不引框架。
 
 ## MCP 接入
 
@@ -133,7 +154,7 @@ Claude Desktop / Cursor 中配置（stdio 方式）：
 
 ## 存储与缓存
 
-- **SQLite 历史**（`app/storage/db.py`）：标准库 sqlite3 + WAL，每次调研落一条记录（报告/事实/关键点），自动保留最近 200 条。
+- **SQLite 历史**（`app/storage/db.py`）：标准库 sqlite3 + WAL，每次调研落一条记录（报告/事实/关键点），自动保留最近 200 条；每条带 `view_count`（打开报告 +1，热门排行依据）与 `user_id`（访客归属，NULL=公共）。
 - **Redis 缓存**（`app/storage/cache.py`）：同主题 24h（±30min 抖动）秒回省 token，处理三大问题——**防穿透**（无结果主题 5 分钟空值缓存）、**防击穿**（`SET NX EX` 互斥锁）、**防雪崩**（TTL 抖动）。Redis/Langfuse 连不上一律优雅降级，不阻塞主流程。
 
 ## 可观测（Langfuse）
@@ -187,7 +208,7 @@ app/
   logging_config.py # 日志走 stderr（MCP stdio 协议通道是 stdout）
 scripts/
   eval_research.py  # 评测脚本
-tests/              # 42 个离线单测（不调用大模型）
+tests/              # 58 个离线单测（不调用大模型）
 ```
 
 ## 部署
@@ -198,7 +219,9 @@ Docker 一键部署（阿里云免费试用步骤见 [DEPLOY.md](DEPLOY.md)）�
 docker compose up -d --build
 ```
 
-密钥通过 `config/.env` 在运行时注入（`.env` 和 `.dockerignore` 双重保证不进镜像）；SQLite 数据挂载 `./data` 卷持久化。
+密钥通过 `config/.env` 在运行时注入（`.env` 和 `.dockerignore` 双重保证不进镜像）；`ADMIN_TOKEN` 管理员令牌也在此配置（留空则管理员接口禁用，返回 403）。SQLite 数据挂载 `./data` 卷持久化。
+
+> 改 `config/.env` 后需 `docker compose up -d`（检测到 env 变化会重建容器）；`docker compose restart` **不会**重新读 env_file。
 
 ## 技术栈
 

@@ -32,7 +32,8 @@
    ```
 
 3. **写密钥**：`config/.env` 内容与本地一致（DASHSCOPE_API_KEY / TAVILY_API_KEY /
-   LANGFUSE 配置可选）。`.env` 已在 .gitignore，不会被提交。
+   LANGFUSE 配置可选），另加管理员令牌 `ADMIN_TOKEN=<强密码>`（留空则管理员接口禁用）。
+   `.env` 已在 .gitignore，不会被提交。
 
 4. **一键起服务**（自动创建 app + redis 两个容器）：
    ```bash
@@ -42,6 +43,9 @@
 5. **验证**：
    ```bash
    curl http://localhost:8000/          # 返回前端页面
+   curl http://localhost:8000/history/hot        # 热门排行（空数组也正常）
+   curl http://localhost:8000/admin/history \
+        -H "Authorization: Bearer <ADMIN_TOKEN>" # 管理员全量历史（token 错/缺 → 401/403）
    curl -X POST http://localhost:8000/research \
         -H "Content-Type: application/json" \
         -d '{"topic":"国产大模型市场分析"}'   # 返回 job_id，轮询拿报告
@@ -68,11 +72,14 @@
       reverse_proxy localhost:8000
   }
   ```
+  建议线上开 HTTPS：纯 `http://公网IP` 属于浏览器"不安全上下文"，部分安全 API
+  （如 `crypto.randomUUID`）不可用。前端已做降级兜底，但 HTTPS 能一次解决所有这类问题。
 - **缓存刷新**：前端勾选「强制刷新」或 `POST /research` 带 `"force": true`，
   跳过缓存重新调研并覆盖旧缓存。
 - **性能说明**：FastAPI job 注册表在内存，进程重启丢「进行中的任务」，但历史都在 SQLite，不丢。
 
 ## 安全注意
 
+- `ADMIN_TOKEN` 是管理员后门密钥：设强密码、勿外泄、勿提交 git（已在 .gitignore）
 - 服务器上的 `config/.env` 权限：`chmod 600 config/.env`
 - 若对外网开放，建议加 Caddy Basic Auth 或只对内网开放 8000

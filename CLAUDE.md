@@ -28,7 +28,7 @@ START → planner（拆子任务）
       → merge（全局去重）
       → Send 扇出 extractor×M（每个来源并行结构化抽取）
       → analyzer（交叉验证出关键点）
-      → writer（qwen-plus 写报告）→ END
+      → writer（qwen-flash 写报告）→ END
 ```
 
 **状态机语义**（`app/graph/state.py`）：`Annotated[list, operator.add]` 是追加式 reducer，并行节点返回的列表会被自动合并；`status` 是 LastValue 通道，**只能由汇聚点节点（merge/analyzer/writer）写**，并行分支写它会 `InvalidUpdateError`。
@@ -41,11 +41,13 @@ START → planner（拆子任务）
 
 **观测**：Langfuse 通过 `_langfuse_callback()` 接入（`app/service.py`），`LANGFUSE_HOST` 必须指向真实地址（云版 `https://cloud.langfuse.com`，默认值 `localhost:3000` 会静默丢 trace）。排查 AI 调用问题先看 `docker compose logs -f app`。
 
+**Web/HTTP 层**（`app/api.py`）：异步 job 模式（POST 立刻返回 job_id，内存 `RESEARCH_JOBS` 30 分钟清理）。历史/热门/管理员接口都查同一张 `research_history` 表——`GET /history` 用 `X-User-Id` 头过滤个人、`GET /history/hot` 按 `view_count` 排行、`GET /admin/history` + `DELETE /admin/history/{id}` 用 `_require_admin`（`Authorization: Bearer <ADMIN_TOKEN>`，空 token 必须 403）。静态资源走 `app.mount("/static", StaticFiles)`，前端 `index.html` 引 `/static/style.css`。
+
 ## 关键约束（务必遵守）
 
 - **token 成本是最高优先级**（用户反复强调）：日常验证只跑离线单测（ruff + pytest，零 LLM 调用），**绝不自动跑真调研/评测 E2E**。真调研只在用户明确要求时跑。
-- **`config/.env` 含真实密钥**（DASHSCOPE_API_KEY/TAVILY_API_KEY/LANGFUSE 三件套）：gitignored，绝不提交；`.dockerignore` 也排除它。部署靠 `docker-compose.yml` 的 `env_file: ./config/.env` 运行时注入。
-- **百炼 max 档 403 无权限**：`llm_writer`/`llm_judge` 用 `qwen3.7-plus`，不要改回 max（账户未开通，改了报告会空）。flash/plus 均可用。
+- **`config/.env` 含真实密钥**（DASHSCOPE_API_KEY/TAVILY_API_KEY/LANGFUSE/ADMIN_TOKEN 四件套）：gitignored，绝不提交；`.dockerignore` 也排除它。部署靠 `docker-compose.yml` 的 `env_file: ./config/.env` 运行时注入。
+- **百炼 max 档 403 无权限**：不要改回 max（账户未开通）。模型分工已定——**writer 用 flash**（实测质量可接受、耗时从 plus 的 ~104s 降到 ~40s）、**judge/analyzer 用 plus**。改模型在 `config/settings.py`。
 - **报告默认 800~1000 字**：writer 字数统计已改为「去掉 URL/语法符号的有效正文」，不要用 `len(md)` 直接判断（会把 URL 算进去虚报 2403 字）。
 - **不要建立系统内对话记忆**：系统是 MCP 工具，用户记忆由外层 AI（Cursor/Claude）持有；系统只记自己的产出（SQLite 历史 + Redis 缓存）。
 - **job 注册表是内存 dict**（`api.py`/`mcp_server.py` 的 `RESEARCH_JOBS`）：已完成任务 30 分钟后清理，别让它们无限增长。
@@ -56,3 +58,6 @@ START → planner（拆子任务）
 - **FastMCP 参数**：工具参数用扁平关键字 + `Annotated[..., Field(...)]`，单个 Pydantic 模型会被嵌套进 "params" 键。
 - **with_structured_output**：返回类型标注不准，用 `cast(Model, llm.invoke(prompt))` 消除 Pylance 假阳性（运行时实际是 Model）。
 - **测试隔离**：`db.configure(tmp_path)` 隔离 SQLite；`RESULT_FILE`/`REPORT_FILE` 是 import 时算好的，要分别 monkeypatch；Redis 用 fakeredis 替换模块级 `_redis_client`。
+- **`crypto.randomUUID` 仅在安全上下文可用**：公网 IP 走纯 HTTP 时它是 `undefined`，前端 `getVisitorId` 必须降级（`Date.now()`+`Math.random()` 拼唯一 ID）。页面要进安全上下文（HTTPS/localhost）才有一整套安全 API。
+- **静态资源不自动路由**：FastAPI 只路由显式声明的路径。`index.html` 抽出的 `style.css` 必须 `app.mount("/static", StaticFiles(...))` 才能访问（link 用 `/static/style.css`）。
+- **docker compose 的 `env_file` 只在容器创建时注入**：改 `config/.env`（如 ADMIN_TOKEN）后要 `docker compose up -d`（自动重建）才生效，`docker compose restart` 不会重新读。
