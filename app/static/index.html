@@ -57,10 +57,18 @@
       const $ = (id) => document.getElementById(id);
 
       // 访客 ID：localStorage 生成一次，之后复用。同浏览器=同一人（个人历史归属）
+      // crypto.randomUUID 只在安全上下文（HTTPS / localhost）可用：
+      // 公网 IP 走纯 HTTP 时它是 undefined，必须降级。访客 ID 只需唯一稳定，不必是真 UUID。
+      function genVisitorId() {
+        if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+          return crypto.randomUUID();
+        }
+        return "v-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+      }
       function getVisitorId() {
         let id = localStorage.getItem("research_visitor_id");
         if (!id) {
-          id = crypto.randomUUID();
+          id = genVisitorId();
           localStorage.setItem("research_visitor_id", id);
         }
         return id;
