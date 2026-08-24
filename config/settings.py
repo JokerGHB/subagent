@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     llm_analyzer: str = "qwen3.7-plus"
     # 当前百炼账户调用 max 档返回 403（PermissionDenied），writer/judge 降级到 plus
     # （plus 已验证可用）；若账户开通 max 后改回 "qwen3.7-max" 即可提升质量
-    llm_writer: str = "qwen3.7-plus"
+    llm_writer: str = "qwen3.7-flash-2026-07-15"
     llm_judge: str = "qwen3.7-plus"
 
     # ---- 搜索 ----

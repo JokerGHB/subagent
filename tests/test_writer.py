@@ -1,58 +1,45 @@
-"""报告渲染纯函数测试：render_report_markdown 不调用任何模型，离线可跑。"""
-from app.graph.nodes.writer import render_report_markdown
-from app.models.schemas import Report, ReportSection
+"""writer 节点测试：只测纯函数（_format_key_points / _strip_formatting），不调用模型。"""
+from app.graph.nodes.writer import _format_key_points, _strip_formatting
+from app.models.schemas import KeyPoint
 
 
-def _sample_report() -> Report:
-    return Report(
-        title="国产大模型市场调研报告",
-        overview="本报告基于多来源数据交叉验证得出。",
-        sections=[
-            ReportSection(
-                title="市场规模",
-                body="2024 年中国大模型市场规模达 294.16 亿元。",
-                sources=["https://a.com", "https://b.com"],
-            ),
-            ReportSection(
-                title="市场增速",
-                body="2020-2024 年复合增长率约 106.3%。",
-                sources=["https://a.com"],
-            ),
-        ],
-        conclusion="市场处于高速增长期，竞争格局尚不稳固。",
-    )
+def _kp(**kw) -> KeyPoint:
+    base = {
+        "dimension": "市场规模",
+        "value": 294.16,
+        "unit": "亿元",
+        "time": "2024",
+        "sources": ["https://a.com"],
+    }
+    base.update(kw)
+    return KeyPoint(**base)
 
 
-def test_render_full_report():
-    md = render_report_markdown(_sample_report())
-    assert md.startswith("# 国产大模型市场调研报告")
-    assert "## 关键发现" in md
-    assert "### 市场规模" in md
-    assert "### 市场增速" in md
-    assert "**来源：**" in md
-    assert "## 结论" in md
-    assert "市场处于高速增长期" in md
+def test_format_key_points_renders_value_unit_sources():
+    text = _format_key_points({"key_points": [_kp()]})
+    assert "市场规模: 294.16亿元 (2024)" in text
+    assert "印证1源" in text
+    assert "https://a.com" in text
 
 
-def test_render_sources_inside_sections():
-    md = render_report_markdown(_sample_report())
-    # 每个小节正文下方跟着自己的来源
-    assert "**来源：** [https://a.com](https://a.com) · [https://b.com](https://b.com)" in md
+def test_format_key_points_marks_conflict():
+    text = _format_key_points({"key_points": [_kp(conflict="口径不一：a vs b")]})
+    assert "⚠️冲突: 口径不一" in text
 
 
-def test_render_dedup_in_appendix():
-    md = render_report_markdown(_sample_report())
-    appendix = md.split("## 来源附录")[1]
-    # 按"附录行"统计：a.com 被两个小节引用，但附录里只应有一行
-    # （注意不能按子串 count，链接 [url](url) 里同一 url 会出现两次）
-    lines = [ln for ln in appendix.splitlines() if ln.strip().startswith("- [")]
-    assert sum("https://a.com" in ln for ln in lines) == 1
-    assert sum("https://b.com" in ln for ln in lines) == 1
+def test_format_key_points_empty():
+    assert _format_key_points({"key_points": []}) == "(无关键数据点)"
 
 
-def test_render_no_sections():
-    report = Report(title="T", overview="O", conclusion="C")
-    md = render_report_markdown(report)
-    assert "## 关键发现" not in md
-    assert "## 结论" in md
-    assert "## 来源附录" not in md
+def test_strip_formatting_counts_real_words():
+    md = "# 标题\n\n2024 年中国大模型市场规模达 294.16 亿元。\n[来源](https://a.com/very-long)"
+    # 去掉 URL 与语法符号后，只留中文正文 + 数字
+    stripped = _strip_formatting(md)
+    assert "https" not in stripped
+    assert "市场规模达" in stripped
+    assert "294.16" in stripped
+
+
+def test_strip_formatting_ignores_urls_in_length():
+    md = "正文。https://a.com/very-long-url" * 10
+    assert len(_strip_formatting(md)) < 100

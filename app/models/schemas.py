@@ -40,25 +40,6 @@ class AnalysisResult(BaseModel):
     key_points: list[KeyPoint] = Field(default_factory=list)
 
 
-class ReportSection(BaseModel):
-    """报告里的一个小节（一个调研维度）。"""
-    title: str                                              # 小节标题，如"市场规模与增速"
-    body: str                                               # 小节正文：引用数据点数值，不编造
-    sources: list[str] = Field(default_factory=list)        # 本节引用的来源 URL（溯源）
-
-
-class Report(BaseModel):
-    """报告 Agent 的结构化输出：代码再渲染成 Markdown。
-
-    让模型先按 schema 填结构化报告，再用纯函数渲染 Markdown，
-    这样渲染逻辑不进模型，可离线单测、输出稳定。
-    """
-    title: str                                   # 报告标题（基于主题生成）
-    overview: str                                # 概述：主题背景 + 数据概览
-    sections: list[ReportSection] = Field(default_factory=list)  # 每个关键维度一节
-    conclusion: str                              # 结论
-
-
 class MetricScore(BaseModel):
     """评测单个指标的打分。"""
     score: int = Field(ge=1, le=5)  # 1~5，5 最好
