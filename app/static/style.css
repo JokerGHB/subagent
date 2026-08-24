@@ -1,0 +1,156 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+body {
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f4f6f8;
+  color: #1f2328;
+  line-height: 1.6;
+}
+.wrap {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 24px 16px 60px;
+}
+header {
+  margin-bottom: 20px;
+}
+header h1 {
+  font-size: 22px;
+}
+header p {
+  color: #57606a;
+  font-size: 13px;
+  margin-top: 4px;
+}
+.card {
+  background: #fff;
+  border: 1px solid #e1e4e8;
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+input[type="text"] {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  font-size: 14px;
+}
+button {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #2da44e;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+button:hover {
+  background: #2c974b;
+}
+button:disabled {
+  background: #94d3a2;
+  cursor: not-allowed;
+}
+label.force {
+  font-size: 13px;
+  color: #57606a;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.status {
+  margin-top: 12px;
+  font-size: 13px;
+  color: #57606a;
+}
+.report {
+  margin-top: 12px;
+}
+.report h1,
+.report h2,
+.report h3 {
+  margin: 16px 0 8px;
+}
+.report h1 {
+  font-size: 20px;
+}
+.report h2 {
+  font-size: 17px;
+}
+.report h3 {
+  font-size: 15px;
+}
+.report p {
+  margin: 8px 0;
+}
+.report ul {
+  margin: 8px 0 8px 22px;
+}
+.report a {
+  color: #0969da;
+}
+h2.section {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+.history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e1e4e8;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: #fafbfc;
+  cursor: pointer;
+}
+.history-item:hover {
+  border-color: #0969da;
+}
+.history-item .topic {
+  font-weight: 600;
+  font-size: 14px;
+}
+.history-item .meta {
+  font-size: 12px;
+  color: #57606a;
+  text-align: right;
+}
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  margin-left: 6px;
+}
+.tag.done {
+  background: #dafbe1;
+  color: #1a7f37;
+}
+.tag.empty {
+  background: #fff8c5;
+  color: #9a6700;
+}
+.tag.error {
+  background: #ffebe9;
+  color: #cf222e;
+}
+.hidden {
+  display: none;
+}
+.err {
+  color: #cf222e;
+  font-size: 13px;
+  margin-top: 10px;
+}

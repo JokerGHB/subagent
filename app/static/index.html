@@ -4,164 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>多 Agent 调研系统</title>
-    <style>
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-      body {
-        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-        background: #f4f6f8;
-        color: #1f2328;
-        line-height: 1.6;
-      }
-      .wrap {
-        max-width: 860px;
-        margin: 0 auto;
-        padding: 24px 16px 60px;
-      }
-      header {
-        margin-bottom: 20px;
-      }
-      header h1 {
-        font-size: 22px;
-      }
-      header p {
-        color: #57606a;
-        font-size: 13px;
-        margin-top: 4px;
-      }
-      .card {
-        background: #fff;
-        border: 1px solid #e1e4e8;
-        border-radius: 10px;
-        padding: 20px;
-        margin-bottom: 16px;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-      }
-      .row {
-        display: flex;
-        gap: 10px;
-        align-items: center;
-      }
-      input[type="text"] {
-        flex: 1;
-        padding: 10px 12px;
-        border: 1px solid #d0d7de;
-        border-radius: 8px;
-        font-size: 14px;
-      }
-      button {
-        padding: 10px 18px;
-        border: none;
-        border-radius: 8px;
-        cursor: pointer;
-        background: #2da44e;
-        color: #fff;
-        font-size: 14px;
-        font-weight: 600;
-      }
-      button:hover {
-        background: #2c974b;
-      }
-      button:disabled {
-        background: #94d3a2;
-        cursor: not-allowed;
-      }
-      label.force {
-        font-size: 13px;
-        color: #57606a;
-        display: flex;
-        gap: 6px;
-        align-items: center;
-      }
-      .status {
-        margin-top: 12px;
-        font-size: 13px;
-        color: #57606a;
-      }
-      .report {
-        margin-top: 12px;
-      }
-      .report h1,
-      .report h2,
-      .report h3 {
-        margin: 16px 0 8px;
-      }
-      .report h1 {
-        font-size: 20px;
-      }
-      .report h2 {
-        font-size: 17px;
-      }
-      .report h3 {
-        font-size: 15px;
-      }
-      .report p {
-        margin: 8px 0;
-      }
-      .report ul {
-        margin: 8px 0 8px 22px;
-      }
-      .report a {
-        color: #0969da;
-      }
-      h2.section {
-        font-size: 16px;
-        margin-bottom: 10px;
-      }
-      .history-item {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 10px 12px;
-        border: 1px solid #e1e4e8;
-        border-radius: 8px;
-        margin-bottom: 8px;
-        background: #fafbfc;
-        cursor: pointer;
-      }
-      .history-item:hover {
-        border-color: #0969da;
-      }
-      .history-item .topic {
-        font-weight: 600;
-        font-size: 14px;
-      }
-      .history-item .meta {
-        font-size: 12px;
-        color: #57606a;
-        text-align: right;
-      }
-      .tag {
-        display: inline-block;
-        padding: 1px 8px;
-        border-radius: 20px;
-        font-size: 11px;
-        margin-left: 6px;
-      }
-      .tag.done {
-        background: #dafbe1;
-        color: #1a7f37;
-      }
-      .tag.empty {
-        background: #fff8c5;
-        color: #9a6700;
-      }
-      .tag.error {
-        background: #ffebe9;
-        color: #cf222e;
-      }
-      .hidden {
-        display: none;
-      }
-      .err {
-        color: #cf222e;
-        font-size: 13px;
-        margin-top: 10px;
-      }
-    </style>
+    <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
     <div class="wrap">
@@ -189,16 +32,46 @@
       </div>
 
       <div class="card">
-        <h2 class="section">📚 调研历史（点击查看报告）</h2>
+        <h2 class="section">📚 我的调研历史（点击查看报告）</h2>
         <div id="history"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="section">🔥 全站热门 Top10</h2>
+        <div id="hot-history"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="section">🛠 管理员入口</h2>
+        <div class="row">
+          <input id="adminToken" type="password" placeholder="管理员令牌" />
+          <input id="adminTopic" type="text" placeholder="按主题过滤（可选）" />
+          <button onclick="loadAdmin(true)">查询全量历史</button>
+        </div>
+        <div id="adminInfo" class="status"></div>
+        <div id="adminBody" class="hidden"></div>
       </div>
     </div>
 
     <script>
       const $ = (id) => document.getElementById(id);
 
+      // 访客 ID：localStorage 生成一次，之后复用。同浏览器=同一人（个人历史归属）
+      function getVisitorId() {
+        let id = localStorage.getItem("research_visitor_id");
+        if (!id) {
+          id = crypto.randomUUID();
+          localStorage.setItem("research_visitor_id", id);
+        }
+        return id;
+      }
+
       async function api(path, opts) {
-        const res = await fetch(path, opts);
+        const headers = {
+          "X-User-Id": getVisitorId(),
+          ...(opts && opts.headers),
+        };
+        const res = await fetch(path, { ...opts, headers });
         if (!res.ok) {
           let detail = "请求失败";
           try {
@@ -307,31 +180,125 @@
         }
       }
 
+      function renderHistoryItem(r) {
+        const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+        // created_at 是 UTC 存储，new Date 自动转本地时区显示
+        const time = new Date(r.created_at).toLocaleString("zh-CN", {
+          hour12: false,
+        });
+        const facts = r.summary ? r.summary.facts : 0;
+        const views = r.view_count != null ? ` · 👁 ${r.view_count}` : "";
+        const meta = `${time} · 事实 ${facts}${views}${tag}`;
+        return `<div class="history-item" onclick="openHistory('${r.id}')">
+          <span class="topic">${r.topic}</span>
+          <span class="meta">${meta}</span>
+        </div>`;
+      }
+
+      function renderEmpty(selector, text) {
+        $(selector).innerHTML =
+          `<p style="color:#57606a;font-size:13px">${text}</p>`;
+      }
+
       async function loadHistory() {
         const el = $("history");
         try {
+          // api() 自动带 X-User-Id → 后端只返回当前访客的记录
           const rows = await (await api("/history")).json();
           if (!rows.length) {
-            el.innerHTML =
-              '<p style="color:#57606a;font-size:13px">暂无调研记录</p>';
+            renderEmpty("history", "暂无你的调研记录，去上面发起一次吧");
+            return;
+          }
+          el.innerHTML = rows.map(renderHistoryItem).join("");
+        } catch (e) {
+          el.innerHTML = `<p style="color:#cf222e;font-size:13px">历史加载失败：${e.message}</p>`;
+        }
+      }
+
+      async function loadHot() {
+        const el = $("hot-history");
+        try {
+          const rows = await (await api("/history/hot")).json();
+          if (!rows.length) {
+            renderEmpty("hot-history", "暂无调研记录");
             return;
           }
           el.innerHTML = rows
-            .map((r) => {
+            .map((r, i) => {
               const tag = `<span class="tag ${r.status}">${r.status}</span>`;
-              // created_at 是 UTC 存储，new Date 自动转本地时区显示
-              const time = new Date(r.created_at).toLocaleString("zh-CN", {
-                hour12: false,
-              });
-              const meta = `${time} · 事实 ${r.summary ? r.summary.facts : 0}${tag}`;
+              const views = r.view_count != null ? `👁 ${r.view_count}` : "";
+              const num = `${i + 1}`;
               return `<div class="history-item" onclick="openHistory('${r.id}')">
-                <span class="topic">${r.topic}</span>
-                <span class="meta">${meta}</span>
+                <span class="topic">${num} ${r.topic}</span>
+                <span class="meta">${views}${tag}</span>
               </div>`;
             })
             .join("");
         } catch (e) {
-          el.innerHTML = `<p style="color:#cf222e;font-size:13px">历史加载失败：${e.message}</p>`;
+          el.innerHTML = `<p style="color:#cf222e;font-size:13px">热门加载失败：${e.message}</p>`;
+        }
+      }
+
+      // ---- 管理员 ----
+      let adminOffset = 0;
+      const ADMIN_PAGE = 20;
+
+      function adminAuthHeader() {
+        const token = $("adminToken").value.trim();
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      }
+
+      function pageAdmin(delta) {
+        adminOffset = Math.max(0, adminOffset + delta * ADMIN_PAGE);
+        loadAdmin(false);
+      }
+
+      async function loadAdmin(reset) {
+        if (reset) adminOffset = 0;
+        const topic = $("adminTopic").value.trim();
+        try {
+          const q = new URLSearchParams({
+            offset: adminOffset,
+            limit: ADMIN_PAGE,
+          });
+          if (topic) q.set("topic", topic);
+          const data = await (
+            await api(`/admin/history?${q}`, { headers: adminAuthHeader() })
+          ).json();
+          const pages = Math.max(1, Math.ceil(data.total / ADMIN_PAGE));
+          const page = Math.floor(adminOffset / ADMIN_PAGE) + 1;
+          $("adminInfo").textContent =
+            `共 ${data.total} 条 · 第 ${page}/${pages} 页`;
+          if (!data.items.length) {
+            $("adminBody").innerHTML =
+              '<p style="color:#57606a;font-size:13px">没有匹配的记录</p>';
+          } else {
+            $("adminBody").innerHTML =
+              data.items
+                .map((r) => {
+                  const owner = r.user_id
+                    ? r.user_id.slice(0, 8) + "…"
+                    : "公共";
+                  const time = new Date(r.created_at).toLocaleString("zh-CN", {
+                    hour12: false,
+                  });
+                  const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+                  return `<div class="history-item" onclick="openHistory('${r.id}')">
+                  <span class="topic">${r.topic} <span style="color:#57606a;font-size:12px">[${owner}]</span></span>
+                  <span class="meta">${time} · 👁 ${r.view_count || 0}${tag}</span>
+                </div>`;
+                })
+                .join("") +
+              `<div class="row" style="margin-top:12px">
+                <button onclick="pageAdmin(-1)" ${adminOffset === 0 ? "disabled" : ""}>上一页</button>
+                <button onclick="pageAdmin(1)" ${adminOffset + ADMIN_PAGE >= data.total ? "disabled" : ""}>下一页</button>
+              </div>`;
+          }
+          $("adminBody").classList.remove("hidden");
+        } catch (e) {
+          $("adminBody").classList.remove("hidden");
+          $("adminBody").innerHTML =
+            `<p style="color:#cf222e;font-size:13px">${e.message}</p>`;
         }
       }
 
@@ -341,12 +308,14 @@
           const md = await (await api(`/research/${id}/result`)).text();
           showReport(md);
           window.scrollTo({ top: 0, behavior: "smooth" });
+          loadHot(); // 刚打开过一次 → 热门计数可能变化，顺手刷新
         } catch (e) {
           showErr(e.message);
         }
       }
 
       loadHistory();
+      loadHot();
     </script>
   </body>
 </html>

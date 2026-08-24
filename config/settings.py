@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     cache_empty_ttl: int = 300       # 空值缓存 TTL（5 分钟），防穿透（无结果主题不反复打 LLM）
     cache_lock_ttl: int = 300        # 重建互斥锁 TTL（5 分钟自动过期，防死锁），防击穿
 
+    # ---- 管理员 ----
+    # 管理员接口（GET /admin/history）的鉴权令牌；留空则管理员接口禁用（返回 403）。
+    admin_token: str = ""
+
 
 # 全局单例：任何模块 import settings 都拿到同一个实例
 settings = Settings()

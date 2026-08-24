@@ -84,3 +84,90 @@ def test_init_db_idempotent(monkeypatch, tmp_path: Path):
     db.init_db()  # 第二次调用不报错
     db.save_research_record(_result())
     assert len(db.list_history()) == 1
+
+
+# ---------- 访问计数 / 个人归属 / 热门 / 管理员全量 ----------
+
+def test_migration_adds_columns_to_existing_table(monkeypatch, tmp_path: Path):
+    """旧表（无新列）→ init_db 幂等补列，旧数据 view_count=0、user_id=None。"""
+    db.configure(tmp_path / "t.db")
+    # 手工建旧版表 + 插一行旧数据（模拟部署前的库）
+    conn = db._get_conn()
+    conn.execute(
+        """CREATE TABLE research_history (
+            id TEXT PRIMARY KEY, topic TEXT NOT NULL, normalized_topic TEXT NOT NULL,
+            status TEXT NOT NULL, created_at TEXT NOT NULL, report TEXT,
+            facts_json TEXT, key_points_json TEXT, summary TEXT)"""
+    )
+    conn.execute(
+        "INSERT INTO research_history (id, topic, normalized_topic, status, created_at) "
+        "VALUES ('old1', '旧主题', '旧主题', 'written', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+
+    db.init_db()  # 触发补列
+    row = db.get_research("old1")
+    assert row["view_count"] == 0
+    assert row["user_id"] is None
+
+
+def test_increment_view_count(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    rid = db.save_research_record(_result())
+
+    assert db.increment_view_count(rid) == 1
+    assert db.increment_view_count(rid) == 1
+    assert db.get_research(rid)["view_count"] == 2
+    assert db.increment_view_count("nope") == 0  # 不存在返回 0
+
+
+def test_list_history_filters_by_user_id(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    db.save_research_record(_result("我的主题"), user_id="u1")
+    db.save_research_record(_result("别人的主题"), user_id="u2")
+    db.save_research_record(_result("公共主题"))
+
+    assert len(db.list_history(user_id="u1")) == 1
+    assert [r["topic"] for r in db.list_history(user_id="u1")] == ["我的主题"]
+    assert len(db.list_history()) == 3  # 不带 → 全部
+
+
+def test_list_hot_orders_by_view_count(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    a = db.save_research_record(_result("A"))
+    b = db.save_research_record(_result("B"))
+    c = db.save_research_record(_result("C"))
+    db.increment_view_count(a)
+    db.increment_view_count(a)
+    db.increment_view_count(b)
+
+    hot = db.list_hot(limit=10)
+    assert [r["id"] for r in hot] == [a, b, c]
+    assert hot[0]["view_count"] == 2
+
+
+def test_list_all_pagination_and_filter(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    for i in range(5):
+        db.save_research_record(_result(f"AI 主题{i}"))
+
+    page = db.list_all(offset=0, limit=2)
+    assert page["total"] == 5
+    assert len(page["items"]) == 2
+    filtered = db.list_all(topic="AI 主题3")
+    assert filtered["total"] == 1
+    assert filtered["items"][0]["topic"] == "AI 主题3"
+    # 管理员可见 user_id（归属）与 view_count
+    assert "user_id" in page["items"][0]
+    assert "view_count" in page["items"][0]
+
+
+def test_save_research_record_stores_user_id(monkeypatch, tmp_path: Path):
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    rid = db.save_research_record(_result("归属测试"), user_id="u9")
+    assert db.get_research(rid)["user_id"] == "u9"

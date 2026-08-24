@@ -110,8 +110,16 @@ def _empty_result(topic: str) -> dict:
     }
 
 
-def _run_and_store(topic: str) -> dict:
-    """真调研 + 三处落盘：文件（保留兼容）、SQLite（历史）、Redis（缓存）。"""
+def _run_and_store(
+    topic: str,
+    user_id: str | None = None,
+    research_id: str | None = None,
+) -> dict:
+    """真调研 + 三处落盘：文件（保留兼容）、SQLite（历史）、Redis（缓存）。
+
+    user_id：Web 访客标识（个人历史归属）；research_id：与 Web job_id 对齐，
+    保证 job 清理后凭原 job_id 仍能在 SQLite 历史里取到记录。
+    """
     config: dict = {}
     handler = _langfuse_callback()
     if handler is not None:
@@ -119,7 +127,7 @@ def _run_and_store(topic: str) -> dict:
     result = graph.invoke(build_initial_state(topic), config=config)
 
     save_result(result)               # 文件落盘（兼容旧行为）
-    db.save_research_record(result)   # SQLite 历史（新增）
+    db.save_research_record(result, research_id=research_id, user_id=user_id)  # SQLite 历史
 
     serialized = serialize_result(result)
     if serialized["key_points"] and serialized["report"]:
@@ -131,7 +139,11 @@ def _run_and_store(topic: str) -> dict:
     return result
 
 
-def _wait_or_run(topic: str) -> dict:
+def _wait_or_run(
+    topic: str,
+    user_id: str | None = None,
+    research_id: str | None = None,
+) -> dict:
     """没抢到重建锁：短轮询缓存，等持锁请求重建完；超时兜底直接跑。"""
     for _ in range(_LOCK_WAIT_ROUNDS):
         time.sleep(_LOCK_WAIT_SECONDS)
@@ -142,16 +154,24 @@ def _wait_or_run(topic: str) -> dict:
             return deserialize_result(cached)
     # 超时兜底：直接真调研（最坏多跑一次，但不会无限等锁）
     logger.info("等待重建锁超时，兜底直接调研: %s", topic)
-    return _run_and_store(topic)
+    return _run_and_store(topic, user_id, research_id)
 
 
-def invoke_research(topic: str, force: bool = False) -> dict:
+def invoke_research(
+    topic: str,
+    force: bool = False,
+    user_id: str | None = None,
+    research_id: str | None = None,
+) -> dict:
     """跑一次完整调研，返回图最终状态形状的 dict。
 
     编排顺序（省 token 优先）：
     1. force=False 且缓存命中 → 直接返回（秒回，不烧 token）
     2. 未命中 → 抢「重建锁」；抢到的去真调研，没抢到的轮询等结果
     3. 真调研后写文件 + SQLite + Redis；无产出写空值缓存（防穿透）
+
+    user_id：Web 访客标识（落历史时归属个人/公共）；research_id：与 job_id
+    对齐，保证 job 清理后仍能从 SQLite 按原 job_id 取记录。缓存命中不落历史。
     """
     # 1) 缓存命中（非强制刷新）→ 直接返回
     if not force:
@@ -167,9 +187,9 @@ def invoke_research(topic: str, force: bool = False) -> dict:
     # 2) 抢重建锁（防击穿）：同主题并发只有一个真调研
     if cache.acquire_rebuild_lock(topic):
         try:
-            return _run_and_store(topic)
+            return _run_and_store(topic, user_id, research_id)
         finally:
             cache.release_rebuild_lock(topic)
 
     # 3) 没抢到锁：轮询等持锁请求写完缓存
-    return _wait_or_run(topic)
+    return _wait_or_run(topic, user_id, research_id)

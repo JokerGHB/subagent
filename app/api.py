@@ -12,18 +12,21 @@
 """
 import asyncio
 import logging
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.logging_config import setup_logging
 from app.service import invoke_research, serialize_result
 from app.storage import db
+from config.settings import settings
 
 logger = logging.getLogger("research.api")
 
@@ -34,6 +37,34 @@ RESEARCH_JOBS: dict[str, dict] = {}
 
 # 已结束的 job 保留时长：30 分钟后被清理，防止内存无限增长
 _JOB_RETENTION_SECONDS = 1800
+
+# 访客 ID 上限：防止 header 塞超长字符串
+_MAX_USER_ID_LEN = 128
+
+
+def _normalize_user_id(raw: str | None) -> str | None:
+    """把请求头 X-User-Id 归一化：空串/空白 → None（公共），超长截断。"""
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    return value[:_MAX_USER_ID_LEN]
+
+
+def _require_admin(request: Request) -> None:
+    """管理员接口鉴权：Authorization: Bearer <ADMIN_TOKEN>。
+
+    关键：admin_token 为空必须 403（未配置），不能走「空串==空串」比较——
+    否则等于没配置时任何无 token 请求都能通过。比较用 compare_digest 防时序攻击。
+    """
+    expected = settings.admin_token
+    if not expected:
+        raise HTTPException(status_code=403, detail="管理员接口未配置（ADMIN_TOKEN 为空）")
+    auth = request.headers.get("authorization", "")
+    token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+    if not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="管理员令牌无效或缺失")
 
 
 def _cleanup_jobs() -> None:
@@ -56,11 +87,19 @@ class ResearchRequest(BaseModel):
     force: bool = Field(default=False, description="true 则忽略缓存强制重新调研")
 
 
-async def _run_research(job_id: str, topic: str, force: bool) -> None:
-    """后台跑完整调研流程（阻塞调用丢线程池），完成后写回注册表。"""
+async def _run_research(
+    job_id: str, topic: str, force: bool, user_id: str | None
+) -> None:
+    """后台跑完整调研流程（阻塞调用丢线程池），完成后写回注册表。
+
+    research_id=job_id：让 SQLite 记录 id 与 job_id 对齐。这样 job 清理后
+    凭原 job_id 仍能从历史回退取到记录，且 get_result 计数能正确命中。
+    """
     job = RESEARCH_JOBS[job_id]
     try:
-        result = await asyncio.to_thread(invoke_research, topic, force)
+        result = await asyncio.to_thread(
+            invoke_research, topic, force, user_id, research_id=job_id
+        )
         job["status"] = "done"
         job["result"] = result
         job["summary"] = {
@@ -86,19 +125,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Agent Research API", lifespan=lifespan)
 
+# 静态资源目录（style.css 等）：前端 <link href="/static/style.css"> 引用。
+# 不挂载的话 /style.css 会 404 —— FastAPI 只会路由显式声明的路径。
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 @app.post("/research", status_code=202)
-async def start_research(req: ResearchRequest) -> dict:
-    """发起一次调研，立即返回 job_id；用 GET /research/{job_id} 轮询进度。"""
+async def start_research(req: ResearchRequest, request: Request) -> dict:
+    """发起一次调研，立即返回 job_id；用 GET /research/{job_id} 轮询进度。
+
+    user_id 从 X-User-Id 头取（浏览器访客 ID），透传给调研任务用于历史归属。
+    """
     _cleanup_jobs()  # 新任务进来前，顺手清掉超时的旧任务
+    user_id = _normalize_user_id(request.headers.get("x-user-id"))
     job_id = uuid.uuid4().hex[:12]
     RESEARCH_JOBS[job_id] = {
         "id": job_id,
         "topic": req.topic,
         "status": "running",
         "created_at": time.time(),
+        "user_id": user_id,
     }
-    asyncio.create_task(_run_research(job_id, req.topic, req.force))
+    asyncio.create_task(_run_research(job_id, req.topic, req.force, user_id))
     logger.info("发起调研 job=%s topic=%s force=%s", job_id, req.topic, req.force)
     return {"job_id": job_id, "status": "running", "topic": req.topic}
 
@@ -141,15 +189,46 @@ def get_result(
     record = db.get_research(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="任务不存在，job_id 是否正确？")
+    # 记录存在 → 访问次数 +1（热门排行依据）。内存 job 分支不计数：
+    # 刚跑完第一次取结果不算"回看"，job 清理后从历史点开走这里才计。
+    db.increment_view_count(job_id)
     if format == "json":
         return record
     return Response(content=record.get("report") or "（报告为空）", media_type="text/markdown")
 
 
 @app.get("/history")
-def list_history(limit: int = Query(default=20, ge=1, le=100)) -> list[dict]:
-    """调研历史列表（倒序，不拖报告正文；点开详情用 GET /research/{id}/result）。"""
-    return db.list_history(limit=limit)
+def list_history(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[dict]:
+    """个人调研历史（倒序，不拖报告正文；点开详情用 GET /research/{id}/result）。
+
+    带 X-User-Id → 只返回该访客的记录；不带 → 返回全部（公共视角，兼容 CLI/旧调用）。
+    """
+    user_id = _normalize_user_id(request.headers.get("x-user-id"))
+    return db.list_history(limit=limit, user_id=user_id)
+
+
+@app.get("/history/hot")
+def hot_history(limit: int = Query(default=10, ge=1, le=50)) -> list[dict]:
+    """全站热门排行：按访问次数倒序取 TopN（不足 N 条就几条）。"""
+    return db.list_hot(limit=limit)
+
+
+@app.get("/admin/history")
+def admin_history(
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    topic: str | None = Query(default=None, max_length=200),
+) -> dict:
+    """管理员全量历史：分页 + 可选主题模糊过滤，返回 {total, items}。
+
+    鉴权：Authorization: Bearer <ADMIN_TOKEN>（见 _require_admin）。
+    """
+    _require_admin(request)
+    return db.list_all(offset=offset, limit=limit, topic=topic)
 
 
 @app.get("/", include_in_schema=False)

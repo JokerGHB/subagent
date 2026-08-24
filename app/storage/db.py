@@ -47,7 +47,11 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """建表（幂等：已存在则跳过）。"""
+    """建表 + 幂等迁移（旧库补新列）。
+
+    新库：CREATE TABLE 直接带全列。旧库（无 view_count/user_id）：查 PRAGMA
+    table_info 逐个补缺列。旧数据迁移后 view_count=0、user_id=NULL（视为公共）。
+    """
     conn = _get_conn()
     conn.execute(
         """CREATE TABLE IF NOT EXISTS research_history (
@@ -59,9 +63,20 @@ def init_db() -> None:
             report           TEXT,
             facts_json       TEXT,
             key_points_json  TEXT,
-            summary          TEXT
+            summary          TEXT,
+            view_count       INTEGER NOT NULL DEFAULT 0,
+            user_id          TEXT
         )"""
     )
+    # 幂等迁移：现有列名集合里缺哪个就补哪个（ALTER TABLE 无 IF NOT EXISTS）
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(research_history)")}
+    if "view_count" not in existing:
+        conn.execute(
+            "ALTER TABLE research_history ADD COLUMN view_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "user_id" not in existing:
+        # user_id 可空（NULL = 公共 / CLI / MCP 发起的调研）
+        conn.execute("ALTER TABLE research_history ADD COLUMN user_id TEXT")
     conn.commit()
 
 
@@ -89,15 +104,24 @@ def _summary(result: dict) -> dict:
     }
 
 
-def save_research_record(result: dict, research_id: str | None = None) -> str:
-    """调研完成后落一条历史记录，返回记录 id。result 为图最终状态（或序列化结果）dict。"""
+def save_research_record(
+    result: dict,
+    research_id: str | None = None,
+    user_id: str | None = None,
+) -> str:
+    """调研完成后落一条历史记录，返回记录 id。result 为图最终状态（或序列化结果）dict。
+
+    user_id：归属标识。Web 端访客传浏览器访客 ID（个人历史）；CLI/MCP 不传
+    （NULL = 公共）。注意：**不要**在 INSERT 里写 view_count——靠默认值 0，
+    否则 INSERT OR REPLACE 复用 id 重存时会把已累计的访问次数重置掉。
+    """
     rid = research_id or uuid.uuid4().hex[:12]
     conn = _get_conn()
     conn.execute(
         """INSERT OR REPLACE INTO research_history
            (id, topic, normalized_topic, status, created_at,
-            report, facts_json, key_points_json, summary)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            report, facts_json, key_points_json, summary, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             rid,
             result["topic"],
@@ -108,6 +132,7 @@ def save_research_record(result: dict, research_id: str | None = None) -> str:
             _json_field(result.get("facts", [])),
             _json_field(result.get("key_points", [])),
             json.dumps(_summary(result), ensure_ascii=False),
+            user_id,
         ),
     )
     conn.commit()
@@ -132,12 +157,51 @@ def prune_history(keep: int = 200) -> int:
     return cur.rowcount
 
 
-def list_history(limit: int = 20) -> list[dict]:
-    """历史列表（倒序）。不返回 report 正文——列表要轻，报告点开详情再取。"""
+def list_history(limit: int = 20, user_id: str | None = None) -> list[dict]:
+    """历史列表（倒序）。不返回 report 正文——列表要轻，报告点开详情再取。
+
+    user_id：有则只返回该用户的记录（个人历史）；None 返回全部（公共视角）。
+    """
+    conn = _get_conn()
+    sql = (
+        "SELECT id, topic, status, created_at, summary, view_count "
+        "FROM research_history"
+    )
+    params: tuple = ()
+    if user_id is not None:
+        sql += " WHERE user_id = ?"
+        params = (user_id,)
+    sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+    rows = conn.execute(sql, (*params, limit)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["summary"] = json.loads(d["summary"]) if d["summary"] else {}
+        except json.JSONDecodeError:
+            d["summary"] = {}
+        out.append(d)
+    return out
+
+
+def increment_view_count(research_id: str) -> int:
+    """报告被打开一次 → 访问次数 +1。返回受影响行数（记录不存在返回 0）。"""
+    conn = _get_conn()
+    cur = conn.execute(
+        "UPDATE research_history SET view_count = view_count + 1 WHERE id = ?",
+        (research_id,),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def list_hot(limit: int = 10) -> list[dict]:
+    """全站热门排行：按访问次数倒序，其次按创建时间（并列时旧记录在前更稳定）。"""
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT id, topic, status, created_at, summary FROM research_history "
-        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+        "SELECT id, topic, status, created_at, summary, view_count "
+        "FROM research_history "
+        "ORDER BY view_count DESC, created_at DESC, rowid DESC LIMIT ?",
         (limit,),
     ).fetchall()
     out = []
@@ -149,6 +213,36 @@ def list_history(limit: int = 20) -> list[dict]:
             d["summary"] = {}
         out.append(d)
     return out
+
+
+def list_all(offset: int = 0, limit: int = 20, topic: str | None = None) -> dict:
+    """管理员全量查看：分页 + 可选主题模糊过滤，返回 {total, items}。
+
+    items 额外带 user_id（归属：NULL=公共）和 view_count，便于管理端排障。
+    """
+    conn = _get_conn()
+    where, params = "", []
+    if topic:
+        where = " WHERE topic LIKE ?"
+        params = [f"%{topic}%"]
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM research_history{where}", params
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT id, topic, status, created_at, summary, view_count, user_id "
+        f"FROM research_history{where} "
+        "ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?",
+        (*params, limit, offset),
+    ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["summary"] = json.loads(d["summary"]) if d["summary"] else {}
+        except json.JSONDecodeError:
+            d["summary"] = {}
+        items.append(d)
+    return {"total": total, "items": items}
 
 
 def _loads(raw: str | None):

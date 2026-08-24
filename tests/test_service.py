@@ -97,3 +97,49 @@ def test_invoke_empty_cache_hit_returns_empty(monkeypatch):
     assert result["status"] == "empty"
     assert result["key_points"] == []
     assert result["report"] == ""
+
+
+def test_invoke_passes_user_id_and_research_id_to_save(monkeypatch, tmp_path):
+    """真调研路径：user_id / research_id 透传到 save_research_record。"""
+    captured = {}
+
+    def spy_save(result, research_id=None, user_id=None):
+        captured["user_id"] = user_id
+        captured["research_id"] = research_id
+
+    monkeypatch.setattr(cache, "cache_get", lambda t: None)  # 未命中
+    monkeypatch.setattr(cache, "acquire_rebuild_lock", lambda t: True)
+    monkeypatch.setattr(cache, "release_rebuild_lock", _noop)
+    monkeypatch.setattr(cache, "cache_set", _noop)
+    monkeypatch.setattr(cache, "cache_set_empty", _noop)
+    monkeypatch.setattr(db, "save_research_record", spy_save)
+    monkeypatch.setattr(service, "RESULT_FILE", tmp_path / "last_result.json")
+    monkeypatch.setattr(service, "REPORT_FILE", tmp_path / "report.md")
+    monkeypatch.setattr(service.graph, "invoke", lambda *a, **k: _fake_result())
+
+    service.invoke_research("测试主题", force=True, user_id="u1", research_id="r1")
+    assert captured["user_id"] == "u1"
+    assert captured["research_id"] == "r1"
+
+
+def test_invoke_defaults_user_id_none(monkeypatch, tmp_path):
+    """不带 user_id/research_id（CLI/MCP 调用）→ 落历史时两者为 None（公共）。"""
+    captured = {}
+
+    def spy_save(result, research_id=None, user_id=None):
+        captured["user_id"] = user_id
+        captured["research_id"] = research_id
+
+    monkeypatch.setattr(cache, "cache_get", lambda t: None)
+    monkeypatch.setattr(cache, "acquire_rebuild_lock", lambda t: True)
+    monkeypatch.setattr(cache, "release_rebuild_lock", _noop)
+    monkeypatch.setattr(cache, "cache_set", _noop)
+    monkeypatch.setattr(cache, "cache_set_empty", _noop)
+    monkeypatch.setattr(db, "save_research_record", spy_save)
+    monkeypatch.setattr(service, "RESULT_FILE", tmp_path / "last_result.json")
+    monkeypatch.setattr(service, "REPORT_FILE", tmp_path / "report.md")
+    monkeypatch.setattr(service.graph, "invoke", lambda *a, **k: _fake_result())
+
+    service.invoke_research("测试主题")
+    assert captured["user_id"] is None
+    assert captured["research_id"] is None
