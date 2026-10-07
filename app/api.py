@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.logging_config import setup_logging
-from app.progress import ProgressTracker, terminal_snapshot
+from app.progress import ProgressTracker, advance, terminal_snapshot
 from app.service import invoke_research, serialize_result
 from app.storage import db
 from config.settings import settings
@@ -107,11 +107,15 @@ async def _run_research(
         # 这个回调在 to_thread 的工作线程里被调用，而 get_status 在事件循环线程里读。
         # CPython 下往 dict 里塞一个值本身是原子的，所以不需要加锁 —— 进度只是展示用，
         # 偶尔读到"旧一条"也无所谓（下 1.2s 的轮询立刻修正）。
+        # progress_at 记「这份快照是什么时候出炉的」，get_status 靠它把快照往前推
+        # （串行阶段没有事件，不推就会冻住——见 progress.advance 的说明）。
         job["progress"] = snap
+        job["progress_at"] = time.time()
 
     # 初始 0% 快照用「刚开跑」的 tracker：stage=planning、eta=全程先验合计，
     # 前端立刻就有阶段文字 + 预计时长，而不是空白进度条。
     job["progress"] = ProgressTracker().snapshot()
+    job["progress_at"] = time.time()
     try:
         result = await asyncio.to_thread(
             invoke_research, topic, force, user_id, research_id=job_id, on_progress=on_progress
@@ -208,7 +212,13 @@ async def get_status(job_id: str) -> dict:
     if job.get("error"):
         resp["error"] = job["error"]
     if job.get("progress"):
-        resp["progress"] = job["progress"]
+        # 运行中：快照可能是几十秒前出炉的（串行阶段没有节点事件），按已过时间往前推，
+        # 否则进度条与 ETA 会在 analyzing / writing 这两段各冻住半分钟。
+        # 终态快照（done/error）直接给，不再推进。
+        if job["status"] == "running":
+            resp["progress"] = advance(job["progress"], time.time() - job.get("progress_at", time.time()))
+        else:
+            resp["progress"] = job["progress"]
     return resp
 
 

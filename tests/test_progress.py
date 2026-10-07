@@ -7,6 +7,7 @@
    yield 的是 (mode, chunk) 元组、并行分支各来一条 updates、最后一块 values
    等于最终状态。service._run_graph 依赖这个形状，langgraph 升级改行为要在这里炸。
 """
+import itertools
 import time
 
 from app.graph.state import Replace
@@ -14,6 +15,7 @@ from app.progress import (
     PHASE_ORDER,
     PHASE_PRIORS,
     ProgressTracker,
+    advance,
     terminal_snapshot,
 )
 
@@ -292,3 +294,85 @@ def test_tracker_consumes_real_graph_events():
     assert stages[0] == "searching"    # planner 完成 → 开始搜索
     assert stages[-1] == "extracting"  # merge 完成 → 开始抽取
     assert tracker.total == 2          # merge 返回 2 条 sources → 抽取阶段计数 2
+
+
+# ---------- advance：轮询时把「旧快照」按已过时间往前推 ----------
+#
+# 真实故障：analyzing / writing 各是一次串行 LLM 调用（实测各约 30s），中间没有任何
+# 节点事件 → 存下来的 job["progress"] 一直停在事件到达那一刻。实测轮询看到的是
+# 「analyzing 40% / 还需 60s」整整 30 秒一动不动，然后直接跳到 65%。下面的用例
+# 复现的就是这段：没有新事件，只有时间在走。
+
+
+def _snapshot_at(stage: str) -> dict:
+    """造一份「刚进入某阶段」的快照（percent 只含已完成阶段的权重）。"""
+    idx = PHASE_ORDER.index(stage)
+    completed = sum(PHASE_PRIORS[p] for p in PHASE_ORDER[:idx])
+    total = sum(PHASE_PRIORS.values())
+    return {
+        "stage": stage,
+        "label": f"正在{stage}…",
+        "percent": round(100 * completed / total),
+        "done": 0,
+        "total": 0,
+        "elapsed": float(completed),
+        "eta": float(sum(PHASE_PRIORS[p] for p in PHASE_ORDER[idx:])),
+    }
+
+
+def test_advance_creeps_during_serial_stage():
+    """串行阶段没有事件也要能爬：analyzing 停 10s 后百分比必须涨、ETA 必须降。"""
+    base = _snapshot_at("analyzing")
+    later = advance(base, 10.0)
+    assert later["stage"] == "analyzing"          # 阶段不变
+    assert later["percent"] > base["percent"]     # 不再是冻住的 40%
+    assert later["eta"] < base["eta"]
+    assert later["elapsed"] == base["elapsed"] + 10.0
+
+
+def test_advance_monotonic_and_capped():
+    """同一份基准快照反复推进：percent 只涨、eta 只降，且不越 90% 上限。"""
+    base = _snapshot_at("writing")
+    seen = [advance(base, dt) for dt in range(0, 60, 5)]
+    percents = [s["percent"] for s in seen]
+    etas = [s["eta"] for s in seen]
+    assert percents == sorted(percents)
+    assert etas == sorted(etas, reverse=True)
+    # 上限 0.9：事件没到就不宣称本阶段跑完（留出余量给真正的 100%）
+    assert max(percents) < 99
+    assert seen[-1]["percent"] <= 96
+
+
+def test_advance_does_not_mutate_base():
+    """纯函数：不改进参，否则同一个 job 反复轮询会叠加漂移。"""
+    base = _snapshot_at("analyzing")
+    frozen = dict(base)
+    advance(base, 30.0)
+    assert base == frozen
+
+
+def test_advance_never_goes_backwards_after_stage_change():
+    """阶段切换时不能倒退：推进到 90% 上限的值 ≤ 下一阶段刚进入的 percent。
+
+    这是 _SERIAL_PHASE_CAP 存在的意义——否则每次阶段切换进度条都会往回跳。
+    """
+    for stage, nxt in itertools.pairwise(PHASE_ORDER):
+        capped = advance(_snapshot_at(stage), 10_000.0)["percent"]
+        assert capped <= _snapshot_at(nxt)["percent"], stage
+
+
+def test_advance_leaves_terminal_and_waiting_untouched():
+    """终态与等待锁没有耗时先验，原样返回（不能把 done 的 100% 推成 99%）。"""
+    for snap in (
+        terminal_snapshot(12.0, "done"),
+        terminal_snapshot(12.0, "failed"),
+        {"stage": "waiting", "label": "等待其他请求完成缓存重建", "percent": 5, "elapsed": 1.0},
+    ):
+        assert advance(snap, 30.0) is snap
+
+
+def test_advance_tolerates_zero_or_negative_extra():
+    base = _snapshot_at("extracting")
+    assert advance(base, 0.0) is base
+    assert advance(base, -5.0) is base
+    assert advance({}, 10.0) == {}

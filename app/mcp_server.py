@@ -25,7 +25,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from app.logging_config import setup_logging
-from app.progress import ProgressTracker, terminal_snapshot
+from app.progress import ProgressTracker, advance, terminal_snapshot
 from app.search.tavily import search
 from app.service import invoke_research, serialize_result
 
@@ -73,8 +73,10 @@ async def _run_research(job_id: str, topic: str) -> None:
 
     def on_progress(snap: dict) -> None:
         job["progress"] = snap
+        job["progress_at"] = time.time()  # 快照出炉时刻，get_status 靠它把快照往前推
 
     job["progress"] = ProgressTracker().snapshot()  # 初始 0%，客户端立刻有阶段可显示
+    job["progress_at"] = time.time()
     try:
         # invoke_research 是阻塞调用，丢给线程池跑，不卡事件循环
         result = await asyncio.to_thread(invoke_research, topic, on_progress=on_progress)
@@ -204,7 +206,12 @@ async def research_get_status(
     resp = {"job_id": job["id"], "status": job["status"], "topic": job["topic"]}
     resp.update(job.get("summary", {}))
     if job.get("progress"):
-        resp["progress"] = job["progress"]
+        # 运行中的快照可能是几十秒前的（串行阶段没有节点事件），按已过时间往前推，
+        # 与 HTTP 层同构；终态快照直接给。
+        if job["status"] == "running":
+            resp["progress"] = advance(job["progress"], time.time() - job.get("progress_at", time.time()))
+        else:
+            resp["progress"] = job["progress"]
     if job.get("error"):
         resp["error"] = job["error"]
     return json.dumps(resp, ensure_ascii=False)

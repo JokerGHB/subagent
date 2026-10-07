@@ -59,6 +59,42 @@ def _size(value: Any) -> int:
         return 0
 
 
+def advance(snapshot: dict, extra_seconds: float) -> dict:
+    """把一份快照按「距它出炉又过了 extra_seconds」推进到现在的估算，返回新 dict。
+
+    为什么需要它：analyzing / writing 是**一次串行 LLM 调用**，中间没有任何节点事件，
+    所以存下来的 `job["progress"]` 会整整 30s 停在"事件到达那一刻"的旧值 —— 进度条和
+    ETA 双双冻住（实测：analyzing 卡在 40% / 还需 60s 一动不动 30 秒）。
+    tracker 本身有「按时间爬升」的兜底，但没人去问它：轮询读到的是快照，不是 tracker。
+
+    所以轮询时用本函数把快照往前推一步。它是**纯计算、不改入参**（每次都从同一份基准
+    快照推进），因此同一个 job 反复轮询得到的结果只随时间单调前进；新事件到来时由
+    tracker 的新快照直接取代基准，而那个值不会低于推进到 90% 上限的估计。
+
+    只对「有耗时先验的运行中阶段」生效；done / failed / waiting 原样返回。
+    """
+    stage = (snapshot or {}).get("stage")
+    if stage not in PHASE_PRIORS or extra_seconds <= 0:
+        return snapshot
+
+    prior = PHASE_PRIORS[stage]
+    idx = PHASE_ORDER.index(stage)
+    completed = float(sum(PHASE_PRIORS[p] for p in PHASE_ORDER[:idx]))
+
+    # 反解出快照当时的阶段完成比例（percent 里就编码着它），再加这段时间的进度。
+    # 分支计数（done/total）可能已经给出更高的比例，所以取 max —— 只准前进。
+    used = snapshot["percent"] / 100.0 * _TOTAL_PRIOR - completed
+    frac_at = min(1.0, max(0.0, used / prior))
+    frac = max(frac_at, min(_SERIAL_PHASE_CAP, frac_at + extra_seconds / prior))
+
+    out = dict(snapshot)
+    out["percent"] = min(99, round(100 * (completed + prior * frac) / _TOTAL_PRIOR))
+    remaining = sum(PHASE_PRIORS[p] for p in PHASE_ORDER[idx + 1 :])
+    out["eta"] = max(1.0, round(prior * (1.0 - frac) + remaining))
+    out["elapsed"] = round(snapshot.get("elapsed", 0.0) + extra_seconds, 1)
+    return out
+
+
 def terminal_snapshot(elapsed: float, stage: str = "done") -> dict:
     """终态快照（stage="done" 成功 / "failed" 无产出）——进度条走满、不再报 ETA。
 

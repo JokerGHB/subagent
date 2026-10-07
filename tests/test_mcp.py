@@ -175,3 +175,31 @@ def test_run_research_failure_progress_is_failed_stage(monkeypatch):
     assert "分析失败" in job["error"]
     assert job["progress"]["stage"] == "failed"
     assert job["progress"]["eta"] is None
+
+
+def test_status_advances_stale_progress_for_running_job(monkeypatch):
+    """MCP 与 HTTP 层同构：运行中的旧快照按已过时间往前推，别让进度冻住。"""
+    job_id = "progress0003"
+    jobs = _fake_job(monkeypatch, job_id)
+    stale = {
+        "stage": "analyzing",
+        "label": "正在交叉分析关键点…",
+        "percent": 40,
+        "done": 0,
+        "total": 0,
+        "elapsed": 40.0,
+        "eta": 60.0,
+    }
+    jobs[job_id]["progress"] = stale
+    jobs[job_id]["progress_at"] = time.time() - 20  # 20 秒前出炉的旧快照
+
+    async def check():
+        async with Client(mcp) as client:
+            r = await client.call_tool("research_get_status", {"job_id": job_id})
+            return json.loads(r.content[0].text)
+
+    resp = _run(check())
+    assert resp["status"] == "running"
+    assert resp["progress"]["stage"] == "analyzing"
+    assert resp["progress"]["percent"] > stale["percent"]
+    assert resp["progress"]["eta"] < stale["eta"]

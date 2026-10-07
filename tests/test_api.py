@@ -335,3 +335,53 @@ def test_history_record_status_has_progress(client):
     rid = db.save_research_record(fake_invoke("历史主题"))
     st = client.get(f"/research/{rid}").json()
     assert st["progress"]["percent"] == 100 and st["progress"]["stage"] == "done"
+
+
+def test_running_status_advances_stale_progress(client):
+    """运行中的旧快照要按已过时间往前推 —— 否则进度条与 ETA 会冻住半分钟。
+
+    复现线上观感：analyzing 卡在 40% / 还需 60s 整整 30 秒不动（那是一次串行 LLM
+    调用，中间没有任何节点事件，存下来的快照就一直是事件到达那一刻的值）。
+    这里把 progress_at 设成 20 秒前，读到的百分比必须比存的那份高、ETA 更低。
+    """
+    stale = {
+        "stage": "analyzing",
+        "label": "正在交叉分析关键点…",
+        "percent": 40,
+        "done": 0,
+        "total": 0,
+        "elapsed": 40.0,
+        "eta": 60.0,
+    }
+    api.RESEARCH_JOBS["stalerunning"] = {
+        "id": "stalerunning",
+        "topic": "运行中主题",
+        "status": "running",
+        "created_at": time.time() - 60,
+        "progress": stale,
+        "progress_at": time.time() - 20,
+    }
+    p = client.get("/research/stalerunning").json()["progress"]
+    assert p["stage"] == "analyzing"        # 没有新事件 → 阶段不变
+    assert p["percent"] > stale["percent"]  # 但不再是冻住的 40%
+    assert p["eta"] < stale["eta"]
+    assert p["elapsed"] > stale["elapsed"]  # 「已用时长」继续走
+    # 基准快照本身没被改动（推进是纯计算），否则反复轮询会叠加漂移
+    assert api.RESEARCH_JOBS["stalerunning"]["progress"] == stale
+    api.RESEARCH_JOBS.pop("stalerunning", None)
+
+
+def test_terminal_progress_is_not_advanced(client):
+    """终态快照原样返回：不能把 done 的 100% 推成 99%。"""
+    api.RESEARCH_JOBS["donestale"] = {
+        "id": "donestale",
+        "topic": "已完成主题",
+        "status": "done",
+        "created_at": time.time() - 60,
+        "progress": {"stage": "done", "label": "完成", "percent": 100, "done": 0,
+                     "total": 0, "elapsed": 42.0, "eta": None},
+        "progress_at": time.time() - 30,
+    }
+    p = client.get("/research/donestale").json()["progress"]
+    assert p["percent"] == 100 and p["stage"] == "done" and p["eta"] is None
+    api.RESEARCH_JOBS.pop("donestale", None)

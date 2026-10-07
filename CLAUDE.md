@@ -39,6 +39,8 @@ START → planner（拆子任务）
 
 **进度上报（`app/progress.py` + `service._run_graph`）**：Web/MCP 传 `on_progress` 回调时，`invoke_research → _run_and_store → _run_graph` 把 `graph.invoke` 换成 `graph.stream(stream_mode=["updates","values"])`——`updates` 事件喂 `ProgressTracker` 产出快照，**最后一块 `values` 就是最终状态**（与 invoke 等价，`tests/test_progress.py` 有流式形状回归测试钉住这个契约）。不传回调时**一律走 invoke**，所以 CLI 与旧测试零改动。`ProgressTracker` 里 `PHASE_PRIORS` 是各阶段耗时先验，**percent 和 eta 共用这一套权重**（所以「78%」与「还需 22s」永不矛盾）；阶段切换靠「下一步该谁跑」判定（extractor 抽完→analyzing、analyzer 跑完→writing），因为 updates 事件是节点**跑完**才到，差一格就会显示错阶段。
 
+**轮询要推进快照（`progress.advance`）**：`job["progress"]` 只在事件到达时刷新，而 analyzing/writing 是串行 LLM 调用、中间几十秒无事件——不推进就会冻住（实测卡 30s 不动）。所以 api/mcp 的 `get_status` 在 `status=="running"` 时用 `advance(job["progress"], now - job["progress_at"])` 现算（纯函数、不改基准快照，故反复轮询只随时间单调前进）；`progress_at` 由回调在写快照时记录，终态快照直接返回不推进。
+
 **序列化契约**：图状态里的 `facts`/`key_points` 是 Pydantic 对象；`serialize_result` 转纯 dict 存缓存/落盘，`deserialize_result` 还原成 Pydantic——缓存命中返回的 dict 必须反序列化，否则下游属性访问（`kp.conflict`）会崩。
 
 **存储层**（`app/storage/`）：`db.py` 用标准库 sqlite3 + WAL（无 ORM），`save_research_record` 后自动 `prune_history(keep=200)`；一条记录带 `status` / `error`（失败原因）/ `view_count` / `user_id`。`cache.py` 处理 Redis 三大坑——防穿透（空值缓存 5min）、防击穿（SET NX EX 互斥锁）、防雪崩（TTL 抖动 base 24h ± 30min）。**所有外部依赖（Redis/Langfuse）连不上都优雅降级，绝不阻塞主流程**。
@@ -73,3 +75,4 @@ START → planner（拆子任务）
 - **`logger.exception` 会让 `# noqa: BLE001` 变成多余**：ruff 的 blind-except 豁免「用 `logger.exception` 记录堆栈」的处理器，所以把 `logger.warning` 升级成 `logger.exception` 后，原本必需的 `# noqa: BLE001` 会被 RUF100 报 unused（`ruff check` 会红）——此时直接删掉 noqa，别留着。
 - **流式事件是「节点跑完」才到，不是「节点开始」**：`stream_mode="updates"` 里 `{'analyzer': ...}` 到达时 analyzer 已结束、writer 正在跑。所以阶段要按「下一步该谁跑」切（analyzer 事件 → stage=writing），否则用户会看到「正在交叉分析」其实在等写报告。串行阶段的完成比例也要按**本阶段**耗时算（`_stage_elapsed()`），用全程 elapsed 会让刚落进 writing 的阶段直接冲到 90%。
 - **给 service 加可选回调时别改默认路径**：`_run_graph` 只在 `on_progress` 非 None 时走 `graph.stream`，否则保持 `graph.invoke`——CLI/MCP 与 4 个 patch `graph.invoke` 的测试因此零改动。改这类「加功能」时优先用「可选参数 + 保留原路径」而不是全局替换实现。
+- **「事件驱动刷新」的进度快照会冻住，单测测不出来**：`job["progress"]` 只在节点事件到达时写，而 analyzing/writing 是一次串行 LLM 调用（实测各 ~30s），中间零事件 → 存下来的快照整整 30 秒停在同一值（真是这样：analyzing 卡在 40%/还需 60s 不动，然后直接跳到 65%）。tracker 本身有「按时间爬升」兜底，但**没人去问它**——轮询读到的是快照，不是 tracker。修法：`get_status` 在运行中用 `progress.advance(snap, now - progress_at)` 现算（纯函数，不改进参 → 反复轮询不叠加漂移）。**为什么单测没抓到**：测试直接调 `tracker.snapshot()` 并推进假时钟，永远有"人在问"；真实路径只在事件到达时才问。查这类 bug 要盯**真实轮询时间线**，别只看单测绿。
