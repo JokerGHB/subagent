@@ -74,6 +74,35 @@ label.force {
   font-size: 13px;
   color: #57606a;
 }
+/* 进度条：调研要等 1~3 分钟，用户必须能看出「还要等多久」 */
+.progress {
+  margin-top: 12px;
+}
+.bar {
+  height: 8px;
+  background: #eaeef2;
+  border-radius: 20px;
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  width: 0;
+  background: #2da44e;
+  border-radius: 20px;
+  /* 轮询 1.2s 一跳，加过渡才看起来是连续爬升而不是闪动 */
+  transition: width 0.4s ease;
+}
+.bar-fill.failed {
+  background: #cf222e;
+}
+.progress-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: #57606a;
+}
 .report {
   margin-top: 12px;
 }
@@ -142,7 +171,8 @@ h2.section {
   background: #fff8c5;
   color: #9a6700;
 }
-.tag.error {
+.tag.error,
+.tag.failed {
   background: #ffebe9;
   color: #cf222e;
 }

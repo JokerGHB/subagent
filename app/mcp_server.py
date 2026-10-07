@@ -25,6 +25,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from app.logging_config import setup_logging
+from app.progress import ProgressTracker, terminal_snapshot
 from app.search.tavily import search
 from app.service import invoke_research, serialize_result
 
@@ -63,23 +64,42 @@ class ResponseFormat(str, Enum):
 # ---------- 后台调研任务 ----------
 
 async def _run_research(job_id: str, topic: str) -> None:
-    """在事件循环后台跑完整调研流程，完成后写回注册表。"""
+    """在事件循环后台跑完整调研流程，完成后写回注册表。
+
+    进度与 HTTP 层同构：service 的进度回调写进 job["progress"]，客户端轮询
+    research_get_status 就能看到「阶段 + 百分比 + 预计剩余」。
+    """
     job = RESEARCH_JOBS[job_id]
+
+    def on_progress(snap: dict) -> None:
+        job["progress"] = snap
+
+    job["progress"] = ProgressTracker().snapshot()  # 初始 0%，客户端立刻有阶段可显示
     try:
         # invoke_research 是阻塞调用，丢给线程池跑，不卡事件循环
-        result = await asyncio.to_thread(invoke_research, topic)
-        job["status"] = "done"
-        job["result"] = result
+        result = await asyncio.to_thread(invoke_research, topic, on_progress=on_progress)
         job["summary"] = {
             "subtasks": len(result["subtasks"]),
             "sources": len(result["sources"]),
             "facts": len(result["facts"]),
             "key_points": len(result["key_points"]),
         }
+        if not result.get("report"):
+            # 报告为空 = 本次没有可用产出（如 analyzer 403 → 关键点为空 → writer 跳过）。
+            # 与 HTTP 层一致：标 error 带上原因，否则调用方以为 done 却拿到空报告。
+            job["status"] = "error"
+            job["error"] = result.get("error") or "未产出报告"
+            job["progress"] = terminal_snapshot(time.time() - job["created_at"], "failed")
+            logger.warning("调研无产出 job=%s 原因=%s", job_id, job["error"])
+            return
+        job["status"] = "done"
+        job["result"] = result
+        job["progress"] = terminal_snapshot(time.time() - job["created_at"], "done")
     except Exception as e:  # noqa: BLE001 - 后台任务兜底，把错误状态写给客户端
         logger.error("调研失败 job=%s: %s", job_id, type(e).__name__)
         job["status"] = "error"
         job["error"] = str(e)
+        job["progress"] = terminal_snapshot(time.time() - job["created_at"], "failed")
 
 
 # ---------- 渲染 ----------
@@ -175,13 +195,16 @@ async def research_get_status(
         job_id (str): research_start 返回的任务 ID
 
     Returns:
-        str: JSON 字符串，含 status、各阶段产出计数（done 后才有）。
+        str: JSON 字符串，含 status、progress（阶段/百分比/预计剩余秒数）、
+            各阶段产出计数（done 后才有）。
     """
     job = RESEARCH_JOBS.get(job_id)
     if job is None:
         return json.dumps({"job_id": job_id, "status": "not_found"}, ensure_ascii=False)
     resp = {"job_id": job["id"], "status": job["status"], "topic": job["topic"]}
     resp.update(job.get("summary", {}))
+    if job.get("progress"):
+        resp["progress"] = job["progress"]
     if job.get("error"):
         resp["error"] = job["error"]
     return json.dumps(resp, ensure_ascii=False)
@@ -217,10 +240,14 @@ async def research_get_result(
     if job is None:
         return json.dumps({"error": "任务不存在，job_id 是否正确？"}, ensure_ascii=False)
     if job["status"] != "done":
-        return json.dumps(
-            {"job_id": job["id"], "status": job["status"], "tip": "请稍后重试"},
-            ensure_ascii=False,
-        )
+        resp = {
+            "job_id": job["id"],
+            "status": job["status"],
+            "tip": "请稍后重试" if job["status"] == "running" else "本次调研未产出报告",
+        }
+        if job.get("error"):
+            resp["error"] = job["error"]  # 失败原因要透给调用方，而不是只给一句 tip
+        return json.dumps(resp, ensure_ascii=False)
     result = job["result"]
     if response_format == ResponseFormat.JSON:
         return json.dumps(serialize_result(result), ensure_ascii=False, indent=2)

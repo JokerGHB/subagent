@@ -48,8 +48,11 @@ def extractor_node(state: ExtractorInput) -> dict:
     )
     try:
         result: ExtractionResult = llm.invoke(prompt)
-    except Exception as e:  # noqa: BLE001 - 边界容错：任何模型/网络错误都不拖垮整个流程
-        logger.warning("抽取失败 %s: %s", source["url"][:40], type(e).__name__)
+    except Exception as e:  # 边界容错：任何模型/网络错误都不拖垮整个流程（logger.exception 记全堆栈）
+        # exception 而非 warning：带完整堆栈，否则 403 之类的根因在日志里看不到。
+        # 不写 errors 通道：extractor 是并行扇出（一来源一分支），逐条追加会刷屏；
+        # 若全部来源都失败 → facts 为空 → analyzer 会记「未抽取到事实数据」。
+        logger.exception("抽取失败（模型 %s）%s: %s", settings.llm_extractor, source["url"][:40], type(e).__name__)
         return {"facts": []}
 
     for f in result.facts:

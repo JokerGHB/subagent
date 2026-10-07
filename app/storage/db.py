@@ -49,7 +49,7 @@ def _get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     """建表 + 幂等迁移（旧库补新列）。
 
-    新库：CREATE TABLE 直接带全列。旧库（无 view_count/user_id）：查 PRAGMA
+    新库：CREATE TABLE 直接带全列。旧库（无 view_count/user_id/error）：查 PRAGMA
     table_info 逐个补缺列。旧数据迁移后 view_count=0、user_id=NULL（视为公共）。
     """
     conn = _get_conn()
@@ -65,7 +65,8 @@ def init_db() -> None:
             key_points_json  TEXT,
             summary          TEXT,
             view_count       INTEGER NOT NULL DEFAULT 0,
-            user_id          TEXT
+            user_id          TEXT,
+            error            TEXT
         )"""
     )
     # 幂等迁移：现有列名集合里缺哪个就补哪个（ALTER TABLE 无 IF NOT EXISTS）
@@ -77,6 +78,9 @@ def init_db() -> None:
     if "user_id" not in existing:
         # user_id 可空（NULL = 公共 / CLI / MCP 发起的调研）
         conn.execute("ALTER TABLE research_history ADD COLUMN user_id TEXT")
+    if "error" not in existing:
+        # 失败原因（NULL/空 = 成功）。旧记录没有这列 → 迁移后视为成功。
+        conn.execute("ALTER TABLE research_history ADD COLUMN error TEXT")
     conn.commit()
 
 
@@ -120,8 +124,8 @@ def save_research_record(
     conn.execute(
         """INSERT OR REPLACE INTO research_history
            (id, topic, normalized_topic, status, created_at,
-            report, facts_json, key_points_json, summary, user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            report, facts_json, key_points_json, summary, user_id, error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             rid,
             result["topic"],
@@ -133,6 +137,7 @@ def save_research_record(
             _json_field(result.get("key_points", [])),
             json.dumps(_summary(result), ensure_ascii=False),
             user_id,
+            result.get("error", ""),
         ),
     )
     conn.commit()

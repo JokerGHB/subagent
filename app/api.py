@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.logging_config import setup_logging
+from app.progress import ProgressTracker, terminal_snapshot
 from app.service import invoke_research, serialize_result
 from app.storage import db
 from config.settings import settings
@@ -32,7 +33,7 @@ logger = logging.getLogger("research.api")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# 内存任务注册表：job_id -> {id, topic, status, result, summary}（同 MCP server 模式）
+# 内存任务注册表：job_id -> {id, topic, status, result, summary, progress}
 RESEARCH_JOBS: dict[str, dict] = {}
 
 # 已结束的 job 保留时长：30 分钟后被清理，防止内存无限增长
@@ -94,25 +95,51 @@ async def _run_research(
 
     research_id=job_id：让 SQLite 记录 id 与 job_id 对齐。这样 job 清理后
     凭原 job_id 仍能从历史回退取到记录，且 get_result 计数能正确命中。
+
+    进度：把 service 的进度回调写成 job["progress"]，前端轮询 get_status 渲染进度条。
+    先塞一个 0% 的初始快照——缓存秒回 / 抢锁等待这些路径一条图事件都没有，
+    没有初始值的话前端会一直显示「等待中」而不知道进度条该多宽。
     """
     job = RESEARCH_JOBS[job_id]
+    started = time.time()
+
+    def on_progress(snap: dict) -> None:
+        # 这个回调在 to_thread 的工作线程里被调用，而 get_status 在事件循环线程里读。
+        # CPython 下往 dict 里塞一个值本身是原子的，所以不需要加锁 —— 进度只是展示用，
+        # 偶尔读到"旧一条"也无所谓（下 1.2s 的轮询立刻修正）。
+        job["progress"] = snap
+
+    # 初始 0% 快照用「刚开跑」的 tracker：stage=planning、eta=全程先验合计，
+    # 前端立刻就有阶段文字 + 预计时长，而不是空白进度条。
+    job["progress"] = ProgressTracker().snapshot()
     try:
         result = await asyncio.to_thread(
-            invoke_research, topic, force, user_id, research_id=job_id
+            invoke_research, topic, force, user_id, research_id=job_id, on_progress=on_progress
         )
-        job["status"] = "done"
-        job["result"] = result
         job["summary"] = {
             "subtasks": len(result["subtasks"]),
             "sources": len(result["sources"]),
             "facts": len(result["facts"]),
             "key_points": len(result["key_points"]),
         }
+        if not result.get("report"):
+            # 报告为空 = 这次没有可用产出（如 analyzer 403 导致关键点为空、
+            # writer 跳过）。标 error 并带上原因，前端轮询到 error 会显式提示，
+            # 而不是显示"完成"却点开空白。记录已以失败态落进 SQLite 历史。
+            job["status"] = "error"
+            job["error"] = result.get("error") or "未产出报告"
+            job["progress"] = terminal_snapshot(time.time() - started, "failed")
+            logger.warning("调研无产出 job=%s topic=%s 原因=%s", job_id, topic, job["error"])
+            return
+        job["status"] = "done"
+        job["result"] = result
+        job["progress"] = terminal_snapshot(time.time() - started, "done")
         logger.info("调研完成 job=%s topic=%s", job_id, topic)
     except Exception as e:  # noqa: BLE001 - 后台任务兜底，把错误状态写给客户端
         logger.error("调研失败 job=%s: %s", job_id, type(e).__name__)
         job["status"] = "error"
         job["error"] = str(e)
+        job["progress"] = terminal_snapshot(time.time() - started, "failed")
 
 
 @asynccontextmanager
@@ -153,18 +180,35 @@ async def start_research(req: ResearchRequest, request: Request) -> dict:
 
 @app.get("/research/{job_id}")
 async def get_status(job_id: str) -> dict:
-    """查询任务状态（running / done / error / not_found）。"""
+    """查询任务状态（running / done / error / not_found），带 progress 进度快照。"""
     job = RESEARCH_JOBS.get(job_id)
     if job is None:
         # 内存里没有 → 可能在 SQLite 历史里（已完成的历史任务）
         record = db.get_research(job_id)
         if record is not None:
-            return {"job_id": job_id, "status": "done", "topic": record["topic"]}
+            # 历史记录一律终态：进度条直接给满（stage 按成功/失败区分颜色）
+            if not record.get("report"):
+                # 失败记录：如实回 error（而不是谎报 done），让轮询端显式提示
+                return {
+                    "job_id": job_id,
+                    "status": "error",
+                    "topic": record["topic"],
+                    "error": record.get("error") or "该次调研未产出报告",
+                    "progress": terminal_snapshot(0.0, "failed"),
+                }
+            return {
+                "job_id": job_id,
+                "status": "done",
+                "topic": record["topic"],
+                "progress": terminal_snapshot(0.0, "done"),
+            }
         raise HTTPException(status_code=404, detail="任务不存在，job_id 是否正确？")
     resp: dict = {"job_id": job["id"], "status": job["status"], "topic": job["topic"]}
     resp.update(job.get("summary", {}))
     if job.get("error"):
         resp["error"] = job["error"]
+    if job.get("progress"):
+        resp["progress"] = job["progress"]
     return resp
 
 
@@ -189,6 +233,20 @@ def get_result(
     record = db.get_research(job_id)
     if record is None:
         raise HTTPException(status_code=404, detail="任务不存在，job_id 是否正确？")
+    if not record.get("report"):
+        # 失败记录：点开看的是「为什么没产出」，而不是一片空白。
+        # 不计数 view_count —— 失败的记录不该进热门排行。
+        reason = record.get("error") or "该次调研未产出报告（可能分析或报告生成阶段失败）"
+        if format == "json":
+            return record
+        return Response(
+            content=(
+                "# ⚠ 本次调研未产出报告\n\n"
+                f"**失败原因**：{reason}\n\n"
+                "> 该记录以失败态保留，便于排查；修复配置后可重新发起调研。"
+            ),
+            media_type="text/markdown",
+        )
     # 记录存在 → 访问次数 +1（热门排行依据）。内存 job 分支不计数：
     # 刚跑完第一次取结果不算"回看"，job 清理后从历史点开走这里才计。
     db.increment_view_count(job_id)

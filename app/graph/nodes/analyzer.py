@@ -14,6 +14,7 @@ from app.graph.prompts import ANALYZER_PROMPT
 from app.graph.state import ResearchState
 from app.models.llm import get_analyzer_llm
 from app.models.schemas import AnalysisResult
+from config.settings import settings
 
 logger = logging.getLogger("research.nodes.analyzer")
 
@@ -37,15 +38,21 @@ def _build_digest(state: ResearchState) -> str:
 def analyzer_node(state: ResearchState) -> dict:
     if not state["facts"]:
         logger.warning("无事实可分析")
-        return {"key_points": [], "status": "analyzed"}
+        return {"key_points": [], "status": "analyzed", "errors": ["未抽取到事实数据"]}
 
     llm = get_analyzer_llm().with_structured_output(AnalysisResult)
     prompt = ANALYZER_PROMPT.format(facts=_build_digest(state))
     try:
         result: AnalysisResult = llm.invoke(prompt)
-    except Exception as e:  # noqa: BLE001 - 边界容错：分析失败也不拖垮流程
-        logger.warning("分析失败: %s", type(e).__name__)
-        return {"key_points": [], "status": "analyzed"}
+    except Exception as e:  # 边界容错：分析失败也不拖垮流程（logger.exception 记全堆栈）
+        # 不能只降级不吭声：记下原因（errors 通道）并打完整堆栈，
+        # 否则下游 writer 因无关键点直接跳过，产出空报告而状态仍是"完成"。
+        logger.exception("分析失败（模型 %s）: %s", settings.llm_analyzer, type(e).__name__)
+        return {
+            "key_points": [],
+            "status": "analyzed",
+            "errors": [f"分析失败：{type(e).__name__}"],
+        }
 
     # 溯源兜底：模型可能编造 URL，只保留真实出现在事实列表里的来源
     valid_urls = {f.source_url for f in state["facts"]}

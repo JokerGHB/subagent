@@ -27,6 +27,13 @@
           <button id="submitBtn" onclick="submit()">开始调研</button>
         </div>
         <div id="status" class="status"></div>
+        <div id="progressBox" class="progress hidden">
+          <div class="bar"><div id="barFill" class="bar-fill"></div></div>
+          <div class="progress-text">
+            <span id="progressLabel"></span>
+            <span id="progressEta"></span>
+          </div>
+        </div>
         <div id="err" class="err hidden"></div>
         <div id="report" class="report hidden"></div>
       </div>
@@ -144,11 +151,36 @@
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+      // 轮询间隔：GET /research/{id} 只读一个内存字典，很便宜；1.2s 才像"实时"。
+      // 后端进度是【估算】（按阶段耗时先验算），不是精确比例，所以文案写「约」。
+      const POLL_MS = 1200;
+
+      function showProgress(p) {
+        if (!p) return;
+        $("progressBox").classList.remove("hidden");
+        const pct = Math.max(0, Math.min(100, p.percent || 0));
+        const fill = $("barFill");
+        fill.style.width = pct + "%";
+        // 失败态给红条：进度条走满但颜色说明「是结束了，不是成功了」
+        fill.className = "bar-fill" + (p.stage === "failed" ? " failed" : "");
+        $("progressLabel").textContent = `${pct}% · ${p.label || ""}`;
+        const elapsed = `已用 ${Math.round(p.elapsed || 0)}s`;
+        $("progressEta").textContent = p.eta
+          ? `预计还需约 ${Math.round(p.eta)}s · ${elapsed}`
+          : elapsed;
+      }
+      function hideProgress() {
+        $("progressBox").classList.add("hidden");
+        $("barFill").style.width = "0%";
+        $("barFill").className = "bar-fill";
+      }
+
       async function submit() {
         const topic = $("topic").value.trim();
         const force = $("force").checked;
         $("err").classList.add("hidden");
         $("report").classList.add("hidden");
+        hideProgress();
         if (topic.length < 2) {
           showErr("主题至少 2 个字");
           return;
@@ -166,8 +198,9 @@
 
           // 轮询直到 done / error
           for (;;) {
-            await sleep(3000);
+            await sleep(POLL_MS);
             const s = await (await api(`/research/${job_id}`)).json();
+            showProgress(s.progress);
             const sum =
               s.facts !== undefined
                 ? `（来源 ${s.sources} · 事实 ${s.facts} · 关键点 ${s.key_points}）`
@@ -181,6 +214,7 @@
           $("status").textContent = "✅ 完成（结果已写入 SQLite 历史）";
           loadHistory();
         } catch (e) {
+          // 进度条留着并标红（失败也是一次"结束"），失败原因在 err 里显式说明
           showErr(e.message);
           $("status").textContent = "";
         } finally {
@@ -188,8 +222,20 @@
         }
       }
 
+      // 状态标签：class 用英文状态名（对应 style.css 配色），文案显示中文。
+      // 「失败」要一眼可辨 —— 失败记录是保留的，点开能看到失败原因而不是空白。
+      const STATUS_LABEL = {
+        written: "完成",
+        failed: "失败",
+        empty: "无结果",
+        error: "失败",
+      };
+      function statusTag(status) {
+        return `<span class="tag ${status}">${STATUS_LABEL[status] || status}</span>`;
+      }
+
       function renderHistoryItem(r) {
-        const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+        const tag = statusTag(r.status);
         // created_at 是 UTC 存储，new Date 自动转本地时区显示
         const time = new Date(r.created_at).toLocaleString("zh-CN", {
           hour12: false,
@@ -233,7 +279,7 @@
           }
           el.innerHTML = rows
             .map((r, i) => {
-              const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+              const tag = statusTag(r.status);
               const views = r.view_count != null ? `👁 ${r.view_count}` : "";
               const num = `${i + 1}`;
               return `<div class="history-item" onclick="openHistory('${r.id}')">
@@ -294,7 +340,7 @@
                   const time = new Date(r.created_at).toLocaleString("zh-CN", {
                     hour12: false,
                   });
-                  const tag = `<span class="tag ${r.status}">${r.status}</span>`;
+                  const tag = statusTag(r.status);
                   return `<div class="history-item" onclick="openHistory('${r.id}')">
                   <span class="topic">${r.topic} <span style="color:#57606a;font-size:12px">[${owner}]</span></span>
                   <span class="meta">${time} · 👁 ${r.view_count || 0}${tag}
@@ -332,6 +378,7 @@
 
       async function openHistory(id) {
         $("err").classList.add("hidden");
+        hideProgress(); // 历史回看没有正在跑的任务，进度条不该留在页面上
         try {
           const md = await (await api(`/research/${id}/result`)).text();
           showReport(md);

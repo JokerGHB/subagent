@@ -47,6 +47,7 @@ def build_initial_state(topic: str) -> dict:
         "key_points": [],
         "status": "",
         "report": "",
+        "errors": [],
     }
 
 

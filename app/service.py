@@ -13,11 +13,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from app.graph.builder import build_initial_state, graph
 from app.models.schemas import Fact, KeyPoint
+from app.progress import ProgressTracker
 from app.storage import cache, db
 from config.settings import settings
 
@@ -30,6 +32,10 @@ REPORT_FILE = DATA_DIR / "report.md"
 # 没抢到重建锁时，轮询缓存的次数与间隔（共约 10 秒）
 _LOCK_WAIT_ROUNDS = 5
 _LOCK_WAIT_SECONDS = 2
+
+# 进度回调：入参是 app.progress.ProgressTracker.snapshot() 的快照 dict。
+# 只有 Web/MCP 这种「长任务 + 客户端轮询」的场景才需要，CLI 传 None。
+ProgressCallback = Callable[[dict], None]
 
 
 def _langfuse_callback() -> Any:
@@ -55,6 +61,8 @@ def serialize_result(result: dict) -> dict:
         "facts": [f.model_dump() for f in result["facts"]],
         "key_points": [kp.model_dump() for kp in result["key_points"]],
         "report": result["report"],
+        # 失败原因（人话，空串=成功）。落盘/入缓存都要带上，否则失败态丢理由。
+        "error": result.get("error", ""),
     }
 
 
@@ -72,6 +80,7 @@ def deserialize_result(data: dict) -> dict:
         "facts": [Fact(**f) for f in data.get("facts", [])],
         "key_points": [KeyPoint(**kp) for kp in data.get("key_points", [])],
         "report": data.get("report", ""),
+        "error": data.get("error", ""),
     }
 
 
@@ -107,24 +116,82 @@ def _empty_result(topic: str) -> dict:
         "facts": [],
         "key_points": [],
         "report": "",
+        # 带理由：命中空值缓存也是一次「没产出」，前端要据此提示而不是显示空白
+        "error": "该主题近期调研未产出结果（命中空值缓存，5 分钟后可重试）",
     }
+
+
+def _mark_failure(result: dict) -> dict:
+    """报告为空 = 本次调研失败：标 failed 并把节点记下的降级原因汇总成 error。
+
+    为什么以「report 是否为空」判定？report 是流水线的最终产物——analyzer 失败
+    会让 key_points 为空，writer 随即跳过、report 必空。所以 report 空等于这次
+    没有可用产出，无论失败发生在哪一级。有 report 时即使有局部降级（如个别来源
+    抽取失败）也不算失败，error 保持空串。
+    """
+    if result.get("report"):
+        result["error"] = ""
+        return result
+    # 去重保序：analyzer 的根因 + writer 的后果，两个节点可能记同一类原因
+    reasons = list(dict.fromkeys(result.get("errors") or []))
+    result["status"] = "failed"
+    result["error"] = "；".join(reasons) or "未产出报告"
+    return result
+
+
+def _run_graph(
+    topic: str,
+    config: dict,
+    on_progress: ProgressCallback | None = None,
+) -> dict:
+    """跑图并返回最终状态；传了 on_progress 就边跑边上报进度。
+
+    不传回调时**仍走原来的 graph.invoke** —— CLI / MCP（无前端可看）与现有测试里
+    patch graph.invoke 的用例因此零改动，行为完全一致。
+
+    传了回调才换成 graph.stream：updates 事件（每完成一个节点来一条，并行扇出的
+    每个分支各来一条）喂给 ProgressTracker，**最后一块 values 就是完整最终状态**，
+    与 graph.invoke 的返回值等价（等价性由 tests/test_progress.py 的流式形状回归
+    测试固化，防 langgraph 升级悄悄改行为）。
+    """
+    initial = build_initial_state(topic)
+    if on_progress is None:
+        return graph.invoke(initial, config=config)
+
+    tracker = ProgressTracker()
+    on_progress(tracker.snapshot())  # 先推一个初始快照，前端进度条立刻有得显示
+    final: dict = initial
+    for mode, chunk in graph.stream(initial, config=config, stream_mode=["updates", "values"]):
+        if mode == "values":
+            final = chunk  # 累积状态：最后一块即完整最终状态
+        else:
+            on_progress(tracker.on_event(chunk))
+    on_progress(tracker.finish())  # 图跑完 = 100%（调用方若另有终态可再覆盖）
+    return final
 
 
 def _run_and_store(
     topic: str,
     user_id: str | None = None,
     research_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """真调研 + 三处落盘：文件（保留兼容）、SQLite（历史）、Redis（缓存）。
 
     user_id：Web 访客标识（个人历史归属）；research_id：与 Web job_id 对齐，
     保证 job 清理后凭原 job_id 仍能在 SQLite 历史里取到记录。
+    on_progress：可选进度回调（Web 端进度条用），不传则走 invoke 不报进度。
     """
     config: dict = {}
     handler = _langfuse_callback()
     if handler is not None:
         config = {"callbacks": [handler]}
-    result = graph.invoke(build_initial_state(topic), config=config)
+    result = _run_graph(topic, config, on_progress)
+    # 报告为空 → 标失败并带上原因（节点在 errors 通道里记了「为什么没产出」）。
+    # 必须在落盘/落库之前判定，否则失败态和理由进不了文件与历史。
+    result = _mark_failure(result)
+    if result["status"] == "failed":
+        logger.warning("调研失败（无报告）topic=%s 原因=%s", topic, result["error"])
 
     save_result(result)               # 文件落盘（兼容旧行为）
     db.save_research_record(result, research_id=research_id, user_id=user_id)  # SQLite 历史
@@ -143,8 +210,13 @@ def _wait_or_run(
     topic: str,
     user_id: str | None = None,
     research_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """没抢到重建锁：短轮询缓存，等持锁请求重建完；超时兜底直接跑。"""
+    if on_progress is not None:
+        # 进度未知（在等别人跑完）——报「等待」而不是假装 0% 在跑，
+        # 免得用户以为自己的任务卡在规划阶段。
+        on_progress(ProgressTracker().mark_waiting())
     for _ in range(_LOCK_WAIT_ROUNDS):
         time.sleep(_LOCK_WAIT_SECONDS)
         cached = cache.cache_get(topic)
@@ -154,7 +226,7 @@ def _wait_or_run(
             return deserialize_result(cached)
     # 超时兜底：直接真调研（最坏多跑一次，但不会无限等锁）
     logger.info("等待重建锁超时，兜底直接调研: %s", topic)
-    return _run_and_store(topic, user_id, research_id)
+    return _run_and_store(topic, user_id, research_id, on_progress)
 
 
 def invoke_research(
@@ -162,6 +234,7 @@ def invoke_research(
     force: bool = False,
     user_id: str | None = None,
     research_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict:
     """跑一次完整调研，返回图最终状态形状的 dict。
 
@@ -172,6 +245,7 @@ def invoke_research(
 
     user_id：Web 访客标识（落历史时归属个人/公共）；research_id：与 job_id
     对齐，保证 job 清理后仍能从 SQLite 按原 job_id 取记录。缓存命中不落历史。
+    on_progress：可选进度回调（Web/MCP 用），不传则全程用 graph.invoke（CLI 行为不变）。
     """
     # 1) 缓存命中（非强制刷新）→ 直接返回
     if not force:
@@ -187,9 +261,9 @@ def invoke_research(
     # 2) 抢重建锁（防击穿）：同主题并发只有一个真调研
     if cache.acquire_rebuild_lock(topic):
         try:
-            return _run_and_store(topic, user_id, research_id)
+            return _run_and_store(topic, user_id, research_id, on_progress)
         finally:
             cache.release_rebuild_lock(topic)
 
     # 3) 没抢到锁：轮询等持锁请求写完缓存
-    return _wait_or_run(topic, user_id, research_id)
+    return _wait_or_run(topic, user_id, research_id, on_progress)

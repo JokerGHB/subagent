@@ -16,11 +16,16 @@ def fake_invoke(
     force: bool = False,
     user_id: str | None = None,
     research_id: str | None = None,
+    on_progress=None,
 ) -> dict:
     """假调研：返回完整图状态形状（Pydantic 对象），不碰任何外部服务。
 
-    签名与 invoke_research 对齐（_run_research 会以 research_id=job_id 调用）。
+    签名与 invoke_research 对齐（_run_research 会以 research_id=job_id、
+    on_progress=... 调用）。这里顺手推两条进度，验证回调能写进 job["progress"]。
     """
+    if on_progress is not None:
+        on_progress({"stage": "extracting", "label": "正在并行抽取事实 1/2",
+                     "percent": 40, "done": 1, "total": 2, "elapsed": 3.0, "eta": 55.0})
     return {
         "topic": topic,
         "status": "written",
@@ -123,10 +128,10 @@ def test_post_research_passes_user_id(client, monkeypatch):
     """POST /research 带 X-User-Id → 透传到 invoke_research（对齐 job_id）。"""
     captured = {}
 
-    def spy(topic, force=False, user_id=None, research_id=None):
+    def spy(topic, force=False, user_id=None, research_id=None, on_progress=None):
         captured["user_id"] = user_id
         captured["research_id"] = research_id
-        return fake_invoke(topic, force, user_id, research_id)
+        return fake_invoke(topic, force, user_id, research_id, on_progress)
 
     monkeypatch.setattr(api, "invoke_research", spy)
     resp = client.post(
@@ -214,3 +219,119 @@ def test_admin_delete_record(client, monkeypatch):
     # 已删 → 404
     gone = client.delete(f"/admin/history/{rid}", headers=auth)
     assert gone.status_code == 404
+
+
+# ---------- 失败显式上报 ----------
+
+def failed_invoke(
+    topic: str,
+    force: bool = False,
+    user_id: str | None = None,
+    research_id: str | None = None,
+    on_progress=None,
+) -> dict:
+    """假调研（失败版）：搜索有产出、但分析失败 → 报告为空 + status=failed + error。
+
+    这正是线上 403 的样子：facts 有 29 条，key_points 空，report 空。
+    """
+    return {
+        "topic": topic,
+        "status": "failed",
+        "subtasks": [],
+        "sources": [],
+        "facts": [Fact(dimension="市场规模", value=10.0)],
+        "key_points": [],
+        "report": "",
+        "error": "分析失败：PermissionDeniedError",
+    }
+
+
+def _wait_error(client, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = client.get(f"/research/{job_id}").json()
+        if status["status"] == "error":
+            return status
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} 未在 {timeout}s 内进入 error")
+
+
+def test_failed_job_reports_error_instead_of_done(client, monkeypatch):
+    """报告为空 → job 是 error 且带原因（前端据此提示），绝不谎报 done。"""
+    monkeypatch.setattr(api, "invoke_research", failed_invoke)
+    resp = client.post("/research", json={"topic": "失败主题"})
+    job_id = resp.json()["job_id"]
+
+    status = _wait_error(client, job_id)
+    assert "分析失败" in status["error"]
+    assert status["facts"] == 1  # 计数仍透出：能看出"搜到了但没分析出"
+
+
+def test_get_result_for_failed_record_shows_reason(client):
+    """失败的 SQLite 记录：点开看失败原因（不是空白），且不计入热门排行。"""
+    rid = db.save_research_record(failed_invoke("失败主题"))
+
+    md = client.get(f"/research/{rid}/result")
+    assert md.status_code == 200
+    assert "未产出报告" in md.text
+    assert "分析失败：PermissionDeniedError" in md.text
+    assert db.get_research(rid)["view_count"] == 0  # 失败记录不进热门
+
+    # 轮询状态接口对失败记录也如实回 error（而不是 done）
+    st = client.get(f"/research/{rid}").json()
+    assert st["status"] == "error"
+    assert "分析失败" in st["error"]
+
+
+# ---------- 进度条 ----------
+
+def test_status_carries_done_progress(client):
+    """轮询接口带 progress：完成后应为 100% / done / 无 ETA。"""
+    job_id = client.post("/research", json={"topic": "进度主题"}).json()["job_id"]
+    status = _wait_done(client, job_id)
+    p = status["progress"]
+    assert p["percent"] == 100 and p["stage"] == "done" and p["eta"] is None
+    assert p["elapsed"] >= 0
+
+
+def test_progress_callback_writes_into_job(client, monkeypatch):
+    """service 的进度回调确实写进 job["progress"]（前端就靠它渲染）。"""
+    captured = {}
+
+    def capturing(topic, force=False, user_id=None, research_id=None, on_progress=None):
+        captured["cb"] = on_progress
+        return fake_invoke(topic, force, user_id, research_id, on_progress)
+
+    monkeypatch.setattr(api, "invoke_research", capturing)
+    job_id = client.post("/research", json={"topic": "进度主题"}).json()["job_id"]
+    _wait_done(client, job_id)
+
+    # 跑完后 API 覆盖成终态；此时再手动喂一条中间快照，验证回调指向的就是这个 job
+    captured["cb"](
+        {
+            "stage": "analyzing",
+            "label": "正在交叉分析关键点…",
+            "percent": 70,
+            "done": 0,
+            "total": 0,
+            "elapsed": 42.0,
+            "eta": 20.0,
+        }
+    )
+    assert api.RESEARCH_JOBS[job_id]["progress"]["percent"] == 70
+
+
+def test_failed_job_progress_is_failed_stage(client, monkeypatch):
+    """失败也把进度条推到终态（前端标红 + 显示失败原因），不能停在半路。"""
+    monkeypatch.setattr(api, "invoke_research", failed_invoke)
+    job_id = client.post("/research", json={"topic": "失败主题"}).json()["job_id"]
+    status = _wait_error(client, job_id)
+    assert status["progress"]["stage"] == "failed"
+    assert status["progress"]["eta"] is None
+
+
+def test_history_record_status_has_progress(client):
+    """job 已被清理、改从 SQLite 历史取状态时，也要给出终态进度。"""
+    rid = db.save_research_record(fake_invoke("历史主题"))
+    st = client.get(f"/research/{rid}").json()
+    assert st["progress"]["percent"] == 100 and st["progress"]["stage"] == "done"

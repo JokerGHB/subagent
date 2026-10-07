@@ -16,6 +16,7 @@ from typing import cast
 from app.graph.prompts import WRITER_PROMPT
 from app.graph.state import ResearchState
 from app.models.llm import get_writer_llm
+from config.settings import settings
 
 logger = logging.getLogger("research.nodes.writer")
 
@@ -39,7 +40,11 @@ def _format_key_points(state: ResearchState) -> str:
 def writer_node(state: ResearchState) -> dict:
     if not state["key_points"]:
         logger.warning("无关键数据点，跳过报告生成")
-        return {"report": "", "status": "written"}
+        return {
+            "report": "",
+            "status": "written",
+            "errors": ["无关键数据点（分析阶段未产出）"],
+        }
 
     llm = get_writer_llm()
     prompt = WRITER_PROMPT.format(
@@ -50,9 +55,13 @@ def writer_node(state: ResearchState) -> dict:
         # invoke 返回 AIMessage，.content 就是 Markdown 正文字符串
         # cast：content 类型标注可能是 str | list，运行时是纯 str
         md = cast(str, llm.invoke(prompt).content)
-    except Exception as e:  # noqa: BLE001 - 报告失败也不拖垮流程
-        logger.warning("报告生成失败: %s", type(e).__name__)
-        return {"report": "", "status": "written"}
+    except Exception as e:  # 报告失败也不拖垮流程（logger.exception 记全堆栈）
+        logger.exception("报告生成失败（模型 %s）: %s", settings.llm_writer, type(e).__name__)
+        return {
+            "report": "",
+            "status": "written",
+            "errors": [f"报告生成失败：{type(e).__name__}"],
+        }
 
     length = len(_strip_formatting(md))
     logger.info("报告生成完成（正文 %s 字）", length)

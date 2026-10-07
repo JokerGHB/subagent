@@ -69,3 +69,6 @@ class ResearchState(TypedDict):
     key_points: list[KeyPoint]  # analyzer 串行跑一次，整体覆盖（不需要 reducer）
     status: str
     report: str
+    # 降级原因（人话）：节点吞掉异常时把「为什么没产出」记在这里，不让失败静默。
+    # 与 facts 同款追加式 reducer——analyzer / writer 各写各的，互不覆盖。
+    errors: Annotated[list[str], operator.add]

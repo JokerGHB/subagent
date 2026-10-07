@@ -40,7 +40,8 @@ def main() -> None:
     if result["report"]:
         print(result["report"])
     else:
-        print("（报告为空，writer 阶段未产出）")
+        # 报告为空 = 本次调研失败：把节点记下的失败原因显式打出来（别只印"报告为空"）
+        print(f"❌ 本次调研失败：{result.get('error') or '未产出报告'}")
         print("\n--- 关键数据点 ---")
         for kp in result["key_points"]:
             flag = f"  ⚠️ {kp.conflict}" if kp.conflict else ""

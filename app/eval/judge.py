@@ -1,4 +1,4 @@
-"""评测 Agent：用最强模型（qwen-max）对调研产出按 4 指标打分。
+"""评测 Agent：用最强模型（`settings.llm_judge`）对调研产出按 4 指标打分。
 
 学习点：
 - LLM-as-a-Judge 是评测 agent 系统的常见做法：不写死规则，让最强模型

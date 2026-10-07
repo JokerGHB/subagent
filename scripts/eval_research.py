@@ -13,6 +13,7 @@ import sys
 from app.eval.judge import format_key_points, judge_result
 from app.logging_config import setup_logging
 from app.service import invoke_research, load_last_result, serialize_result
+from config.settings import settings
 
 # 指标名 → 中文名
 _METRIC_CN = {
@@ -45,7 +46,7 @@ def main() -> None:
     print("\n===== 待评测关键数据点 =====")
     print(format_key_points(result))
 
-    print("\n===== 评测打分（qwen-max）=====")
+    print(f"\n===== 评测打分（{settings.llm_judge}）=====")
     jr = judge_result(result, topic)
     total = 0
     for field, cn in _METRIC_CN.items():

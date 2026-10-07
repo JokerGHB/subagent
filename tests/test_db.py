@@ -183,3 +183,53 @@ def test_delete_research_record(monkeypatch, tmp_path: Path):
     assert db.get_research(rid) is None
     assert len(db.list_history()) == 0  # 列表同步消失
     assert db.delete_research_record(rid) == 0  # 不存在 → 0
+
+
+# ---------- 失败原因（error 列） ----------
+
+def test_save_and_get_failure_reason(monkeypatch, tmp_path: Path):
+    """失败记录：status=failed + error 一并入库，点开历史能看到原因。"""
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    failed = _result("失败主题")
+    failed["status"] = "failed"
+    failed["report"] = ""
+    failed["error"] = "分析失败：PermissionDeniedError"
+
+    rid = db.save_research_record(failed)
+    row = db.get_research(rid)
+    assert row["status"] == "failed"
+    assert row["error"] == "分析失败：PermissionDeniedError"
+    # 列表也带 status，前端据此渲染红标签
+    assert db.list_history()[0]["status"] == "failed"
+
+
+def test_success_record_has_empty_error(monkeypatch, tmp_path: Path):
+    """成功记录 error 为空串（不是 None），前端判断不用区分两种空值。"""
+    db.configure(tmp_path / "t.db")
+    db.init_db()
+    rid = db.save_research_record(_result())
+    assert db.get_research(rid)["error"] == ""
+
+
+def test_migration_adds_error_column(monkeypatch, tmp_path: Path):
+    """旧库（无 error 列）→ init_db 幂等补列，旧记录 error 为 NULL（视为成功）。"""
+    db.configure(tmp_path / "t.db")
+    conn = db._get_conn()
+    conn.execute(
+        """CREATE TABLE research_history (
+            id TEXT PRIMARY KEY, topic TEXT NOT NULL, normalized_topic TEXT NOT NULL,
+            status TEXT NOT NULL, created_at TEXT NOT NULL, report TEXT,
+            facts_json TEXT, key_points_json TEXT, summary TEXT,
+            view_count INTEGER NOT NULL DEFAULT 0, user_id TEXT)"""
+    )
+    conn.execute(
+        "INSERT INTO research_history (id, topic, normalized_topic, status, created_at, report) "
+        "VALUES ('old2', '旧主题', '旧主题', 'written', '2026-01-01T00:00:00+00:00', '# 旧报告')"
+    )
+    conn.commit()
+
+    db.init_db()  # 触发补列
+    assert db.get_research("old2")["error"] is None
+    # 补列后仍能正常写入失败原因
+    assert "error" in {r["name"] for r in conn.execute("PRAGMA table_info(research_history)")}

@@ -11,6 +11,8 @@
 - **防幻觉设计**：每个数据点强制带原文摘录 + 来源 URL；多来源数值冲突时**标注分歧**而非强行合并。
 - **强类型约束**：抽取/分析结果用 Pydantic 结构化输出，`value` 强制纯数字——类型约束比提示词更可靠。
 - **缓存与记忆**：Redis 同主题缓存命中秒回（省 token，防穿透/击穿/雪崩）；SQLite 持久化历史（自动保留最近 200 条）。
+- **实时进度**：网页提交后显示**进度条 + 当前阶段 + 预计剩余秒数**（基于 LangGraph 流式事件的真实阶段推进，非假动画），不用干等不知道还要多久。
+- **失败可见**：任何一级失败（如模型无权限）都会显式上报——**状态标记为失败 + 说明失败原因**，失败记录保留在历史里可点开查看，而不是留一条点开空白的「完成」记录。
 - **历史与运维**：SQLite 历史按访客区分个人/公共，全站热门 Top10 按打开次数排行，管理员用 `ADMIN_TOKEN` 全量查看与删除。
 - **可观测**：Langfuse trace 完整记录每次 LLM 调用的 prompt / 回复 / token / 耗时 / 费用。
 - **LLM-as-a-Judge 评测**：对产出按可溯源性 / 冲突处理 / 相关性 / 覆盖度打分。
@@ -23,7 +25,7 @@
   │
   ▼
 ┌────────────────────────────────┐
-│ planner  规划 Agent  qwen-flash │  拆成 2~4 个可并行搜索的子任务
+│ planner  规划 Agent  flash      │  拆成 2~4 个可并行搜索的子任务
 └────────────────────────────────┘
   │  Send 并行扇出
   ▼
@@ -36,22 +38,24 @@ merge 汇聚点（跨子任务全局去重）
   │  Send 并行扇出
   ▼
 ┌────────────────────────────────┐
-│ extractor 抽取 Agent qwen-flash │  网页 → 强类型事实（纯数字+单位+原文）
+│ extractor 抽取 Agent flash      │  网页 → 强类型事实（纯数字+单位+原文）
 └────────────────────────────────┘
   │
   ▼
 ┌────────────────────────────────┐
-│ analyzer 分析 Agent qwen-plus   │  交叉验证 + 冲突标注 + 找共识
+│ analyzer 分析 Agent  max        │  交叉验证 + 冲突标注 + 找共识
 └────────────────────────────────┘
   │
   ▼
 ┌────────────────────────────────┐
-│ writer  报告 Agent  qwen-flash  │  组装 800~1000 字 Markdown 报告
+│ writer  报告 Agent  flash       │  组装 800~1000 字 Markdown 报告
 └────────────────────────────────┘
   │
   ▼
 报告落盘 + SQLite 历史 + Redis 缓存 + Langfuse trace
 ```
+
+每个节点的完成事件都会经 `graph.stream` 上报给 `app/progress.py`，换算成进度条百分比与预计剩余时间（`PHASE_PRIORS` 是各阶段耗时先验，百分比与 ETA 共用同一套权重）。
 
 两级 `Send` 并行扇出（Map-Reduce-Map）：子任务并行搜索 → 汇聚去重 → 来源并行抽取 → 汇聚分析。只有汇聚点节点写全局进度，避免并行分支对同一状态通道重复写入。
 
@@ -59,14 +63,16 @@ merge 汇聚点（跨子任务全局去重）
 
 | Agent          | 模型          | 职责                                                |
 | -------------- | ------------- | --------------------------------------------------- |
-| 规划 planner   | qwen3.7-flash | 把主题拆成 2~4 个子任务                             |
+| 规划 planner   | qwen3.8-flash | 把主题拆成 2~4 个子任务                             |
 | 搜索 searcher  | Tavily API    | 联网搜索 + 来源可信度打分 + 去重                    |
-| 抽取 extractor | qwen3.7-flash | 网页 → 结构化事实（value 纯数字 / unit / 原文摘录） |
-| 分析 analyzer  | qwen3.7-plus  | 同维度合并、冲突标注、丢弃噪声，输出关键数据点      |
-| 报告 writer    | qwen3.7-flash | 按 800~1000 字要求组装 Markdown 报告                |
-| 评测 judge     | qwen3.7-plus  | 按可溯源性/冲突处理/相关性/覆盖度打分               |
+| 抽取 extractor | qwen3.8-flash | 网页 → 结构化事实（value 纯数字 / unit / 原文摘录） |
+| 分析 analyzer  | qwen3.8-max   | 同维度合并、冲突标注、丢弃噪声，输出关键数据点      |
+| 报告 writer    | qwen3.8-flash | 按 800~1000 字要求组装 Markdown 报告                |
+| 评测 judge     | qwen3.8-max   | 按可溯源性/冲突处理/相关性/覆盖度打分               |
 
-按任务难度分级用模型：flash 干高频重活（搜索/抽取/写报告），plus 干关键判断（分析/评测）。> 注：账户未开通 max 档（调用返回 403）。writer 曾用 plus，实测 flash 质量可接受、耗时从 ~104s 降到 ~40s，故降级 flash 省 token；开通 max 后可在 `config/settings.py` 改回 `qwen3.7-max`。
+分级原则看两件事——**调用次数**和**串行还是并行**：抽取每个来源调一次（调用次数最多，是 token 大头），规划/分析/写作是串行节点（每次耗时都直接叠进用户等待时长）。所以高频重活与串行写作走 flash，只有「调一次但质量关键」的分析和离线评测走 max。writer 从 max 换 flash 后实测耗时 ~104s → ~40s、质量可接受。全部在 `config/settings.py` 一处改。
+
+> 若模型挂起，`llm_timeout`（默认 120s）会让它快速失败并走到「失败显式上报」，不会让任务永远 running。
 
 ## 快速开始
 
@@ -97,11 +103,15 @@ docker compose up -d --build   # 自动创建 app + redis 两个容器
 **① 提交调研卡片**
 - 输入框：填调研主题（≥2 字）
 - 「强制刷新」复选框：勾上后忽略 Redis 缓存强制重新调研（默认命中缓存直接秒回）
-- 点「开始调研」→ 每 3 秒轮询一次进度（显示 `来源 N · 事实 N · 关键点 N`）→ 完成后自动渲染 Markdown 报告
+- 点「开始调研」→ **进度条**显示真实阶段（规划子任务 → 并行搜索 N/M → 并行抽取 N/M → 交叉分析 → 撰写报告）、百分比、预计还需多少秒、已用时长 → 完成后自动渲染 Markdown 报告
+  - 进度是**估算**（按阶段耗时先验推算，非精确比例），所以文案写「约」；ETA 单调收敛（只减不增）
+  - 失败时进度条标红并显示失败原因（不会停在半路装死）
+  - 缓存命中是秒回，进度条会直接到 100%
 
 **② 📚 我的调研历史**
 - 浏览器首次访问自动生成访客 ID（localStorage），后续请求带 `X-User-Id` 头
 - 只展示**你自己**发起的调研（倒序），点击任意一条回看完整报告
+- 失败记录以红色「失败」标签保留，点开看到**失败原因**（如「分析失败：PermissionDeniedError」）而不是空白
 
 **③ 🔥 全站热门 Top10**
 - 按「报告被打开次数」倒序取前 10 条（不足 10 条就几条），前三名标 1/2/3
@@ -116,8 +126,8 @@ docker compose up -d --build   # 自动创建 app + redis 两个容器
 | 接口 | 说明 |
 |---|---|
 | `POST /research` | 提交调研，返回 job_id（异步执行） |
-| `GET /research/{job_id}` | 轮询进度（running / done / error） |
-| `GET /research/{job_id}/result` | 取报告（markdown / json），记录存在则打开次数 +1 |
+| `GET /research/{job_id}` | 轮询进度（running / done / error，error 时带 `error` 失败原因）；带 `progress`：`{stage, label, percent, done, total, elapsed, eta}` |
+| `GET /research/{job_id}/result` | 取报告（markdown / json），记录存在则打开次数 +1；失败记录返回失败原因、不计入热门 |
 | `GET /history` | 历史列表；带 `X-User-Id` 只返回个人，不带返回全部 |
 | `GET /history/hot` | 全站热门 TopN（默认 10，按打开次数） |
 | `GET /admin/history` | 管理员全量（需 `Authorization: Bearer <ADMIN_TOKEN>`） |
@@ -146,15 +156,15 @@ Claude Desktop / Cursor 中配置（stdio 方式）：
 }
 ```
 
-| 工具                          | 说明                                  |
-| ----------------------------- | ------------------------------------- |
-| `research_start(topic)`       | 提交调研主题，返回 job_id（异步执行） |
-| `research_get_status(job_id)` | 查询调研进度                          |
+| 工具                          | 说明                                          |
+| ----------------------------- | --------------------------------------------- |
+| `research_start(topic)`       | 提交调研主题，返回 job_id（异步执行）         |
+| `research_get_status(job_id)` | 查询调研进度（含 `progress`：阶段/百分比/ETA）|
 | `research_get_result(job_id)` | 拉取调研结果（Markdown）              |
 
 ## 存储与缓存
 
-- **SQLite 历史**（`app/storage/db.py`）：标准库 sqlite3 + WAL，每次调研落一条记录（报告/事实/关键点），自动保留最近 200 条；每条带 `view_count`（打开报告 +1，热门排行依据）与 `user_id`（访客归属，NULL=公共）。
+- **SQLite 历史**（`app/storage/db.py`）：标准库 sqlite3 + WAL，每次调研落一条记录（报告/事实/关键点），自动保留最近 200 条；每条带 `view_count`（打开报告 +1，热门排行依据）、`user_id`（访客归属，NULL=公共）与 `error`（失败原因，空=成功）。**没产出报告的那次也落库**，状态标 `failed`，避免「失败被静默丢掉、用户只看到空白」。
 - **Redis 缓存**（`app/storage/cache.py`）：同主题 24h（±30min 抖动）秒回省 token，处理三大问题——**防穿透**（无结果主题 5 分钟空值缓存）、**防击穿**（`SET NX EX` 互斥锁）、**防雪崩**（TTL 抖动）。Redis/Langfuse 连不上一律优雅降级，不阻塞主流程。
 
 ## 可观测（Langfuse）
@@ -182,6 +192,7 @@ uv run python -m scripts.eval_research "新主题"   # 现场调研后评测
 
 | 手段                                 | 效果                                              |
 | ------------------------------------ | ------------------------------------------------- |
+| 模型分级（flash / max）              | 高频与串行节点走 flash：等待时长与 token 双降（writer ~104s → ~40s） |
 | `tavily_max_results = 3`             | 来源数 ~20 → ~12，抽取调用降 ~40%                 |
 | `extractor_max_chars = 1500`         | 限制喂给抽取模型的正文长度                        |
 | snippet ≥100 字不抓正文              | 连 HTTP 请求都省                                  |
@@ -201,14 +212,15 @@ app/
   analysis/         # 数据点分组/选优（纯函数）
   eval/             # LLM-as-a-Judge 评测
   storage/          # SQLite 历史 + Redis 缓存（防穿透/击穿/雪崩）
-  service.py        # 统一入口：缓存编排 + 落盘 + 历史 + Langfuse
+  progress.py       # 进度估算（纯逻辑，可注入时钟单测）
+  service.py        # 统一入口：缓存编排 + 落盘 + 历史 + Langfuse + 进度回调
   mcp_server.py     # MCP 封装（FastMCP，stdio）
-  api.py            # FastAPI HTTP 层（异步 job + 历史接口）
+  api.py            # FastAPI HTTP 层（异步 job + 进度 + 历史接口）
   static/index.html # 极简前端（原生 JS，无构建）
   logging_config.py # 日志走 stderr（MCP stdio 协议通道是 stdout）
 scripts/
   eval_research.py  # 评测脚本
-tests/              # 58 个离线单测（不调用大模型）
+tests/              # 94 个离线单测（不调用大模型）
 ```
 
 ## 部署

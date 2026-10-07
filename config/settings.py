@@ -22,15 +22,20 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
-    # 模型分级：按 Agent 角色选择不同档位的 Qwen
-    llm_planner: str = "qwen3.7-flash-2026-07-15"
-    llm_searcher: str = "qwen3.7-flash-2026-07-15"
-    llm_extractor: str = "qwen3.7-flash-2026-07-15"
-    llm_analyzer: str = "qwen3.7-plus"
-    # 当前百炼账户调用 max 档返回 403（PermissionDenied），writer/judge 降级到 plus
-    # （plus 已验证可用）；若账户开通 max 后改回 "qwen3.7-max" 即可提升质量
-    llm_writer: str = "qwen3.7-flash-2026-07-15"
-    llm_judge: str = "qwen3.7-plus"
+    # 模型分级：按 Agent 角色选档。原则看两件事——「调用次数」和「串行还是并行」：
+    # 并行扇出（extractor 每来源一次）是 token 大头；串行节点（planner/analyzer/writer）
+    # 每一次的耗时都直接叠进用户等待时长。所以：重活/串行写作走 flash，关键判断走 max。
+    llm_planner: str = "qwen3.8-flash"    # 拆 2~4 个子任务，简单结构化；串行 → 要快
+    llm_extractor: str = "qwen3.8-flash"  # 每个来源调一次，调用次数最多 → token 大头
+    llm_writer: str = "qwen3.8-flash"     # 输出 800~1000 字；实测从 max 的 ~104s 降到 ~40s
+    llm_analyzer: str = "qwen3.8-max"     # 只调 1 次，但数字分析/冲突标注要稳 → 不降级
+    llm_judge: str = "qwen3.8-max"        # 离线评测，调用少 → 用最强
+    # 死配置：全仓库没有节点调用 get_searcher_llm（searcher 只走 Tavily API）。
+    # 保留字段作为「将来给搜索做 LLM 打分/重排」的开关，但别以为它现在生效。
+    llm_searcher: str = "qwen3.8-flash"
+    # 单次 LLM 调用的超时（秒）。不设的话模型挂起时任务会永远 running —— 有了它才会
+    # 快速失败并走到「失败显式上报」那条路（权限/参数错误本来就是快速失败，不受影响）。
+    llm_timeout: int = 120
 
     # ---- 搜索 ----
     tavily_api_key: str = ""
@@ -57,6 +62,7 @@ class Settings(BaseSettings):
 
     # ---- 管理员 ----
     # 管理员接口（GET /admin/history）的鉴权令牌；留空则管理员接口禁用（返回 403）。
+    # 默认留空 —— 真实令牌写在 config/.env（已 gitignore），不要把口令提交进仓库。
     admin_token: str = ""
 
 
