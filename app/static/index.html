@@ -99,7 +99,35 @@
 
       // 极简 Markdown 渲染：标题 / 列表 / 粗体 / 链接，够演示用
       function inline(s) {
-        return s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        return s
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          // [文字](链接) → 真链接。之前只认 **加粗**，链接被当普通文字整串显示，
+          // 报告里每处 [来源](https://…) 都露出一条长 URL（含中文被百分号编码后的
+          // %E9%A2%84…，看着就像乱码），而且点不动。
+          // URL 来自外部网页（不可信）：只认 http(s)，并把 " 转义成 %22，
+          // 否则带双引号的 URL 能从 href 里逃逸出去注入属性。
+          .replace(
+            /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+            (m, text, url) =>
+              `<a href="${url.replace(/"/g, "%22")}" target="_blank" rel="noopener noreferrer">` +
+              `${urlLabel(text)}</a>`
+          );
+      }
+
+      // 附录里 writer 按 prompt 写的是 [URL](URL)：链接文字本身就是 URL，其中中文被
+      // 百分号编码（/blog/idc%E9%A2%84%E6%B5%8B… 其实是 /blog/idc预测…）。解回中文、
+      // 超长截断，否则一长串 %E9%A2%84 看着就是乱码。解码可能还原出 < >，解完再转义一次。
+      function urlLabel(text) {
+        if (!/^https?:\/\//i.test(text)) return text;
+        // 进来的文字已被 esc() 转义过，先还原成原始字符再解码，避免二次转义
+        let s = text.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+        try {
+          s = decodeURIComponent(s);
+        } catch (e) {
+          /* 非法百分号序列（如 stray %）：原样显示，别把整行搞坏 */
+        }
+        s = s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        return s.length > 70 ? s.slice(0, 70) + "…" : s;
       }
       function renderMarkdown(md) {
         const esc = (s) =>
