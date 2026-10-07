@@ -16,6 +16,15 @@ def _chat(model: str, temperature: float = 0.2) -> ChatOpenAI:
 
     timeout 必须显式设：默认不超时，模型端挂起时任务会永远 running、进度条也永远
     卡在某个阶段。设了超时才会抛错 → 走到「失败显式上报」那条路。
+    但超时值必须**大于最慢节点的 p99**，否则就是把「慢」人为变成「失败」：
+    analyzer 吐 ~2000 字符在开思考时要 144s，120s 会把它打死（本项目真实踩过）。
+
+    enable_thinking：百炼 qwen3.x 默认开显式思考，实测同任务慢 8 倍
+    （max：13.9 字符/s → 114 字符/s）。关掉它，模型档位不变、速度回到秒级。
+
+    max_retries=1：超时是不可"重试掉"的错误——重试一次就是再等一个完整的超时
+    （曾用 2 次重试把 120s 的等待放大成 362s 才报错）。留 1 次给限流/连接抖动这类
+    快速失败的错误，它们重试很便宜。
     """
     return ChatOpenAI(
         model=model,
@@ -23,8 +32,13 @@ def _chat(model: str, temperature: float = 0.2) -> ChatOpenAI:
         api_key=SecretStr(settings.dashscope_api_key),
         base_url=settings.dashscope_base_url,
         temperature=temperature,
-        timeout=settings.llm_timeout,
-        max_retries=2,
+        timeout=(
+            settings.llm_timeout_thinking
+            if settings.llm_enable_thinking
+            else settings.llm_timeout
+        ),
+        max_retries=1,
+        extra_body={"enable_thinking": settings.llm_enable_thinking},
     )
 
 

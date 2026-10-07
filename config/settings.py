@@ -33,9 +33,19 @@ class Settings(BaseSettings):
     # 死配置：全仓库没有节点调用 get_searcher_llm（searcher 只走 Tavily API）。
     # 保留字段作为「将来给搜索做 LLM 打分/重排」的开关，但别以为它现在生效。
     llm_searcher: str = "qwen3.8-flash"
+    # 百炼 qwen3.x 默认开启「思考」（显式长推理），实测代价极大：
+    #   同一任务 qwen3.8-max 开思考 90.5s / 1260 字符（13.9 字符/s），关思考 8.6s / 979 字符（114 字符/s）
+    #   —— 8 倍差距。analyzer 要吐 ~2000 字符，开思考要 ~144s（直接撞超时）、关思考 ~18s。
+    # 默认关掉：调研是「抽取+归纳」型任务，不需要长链思考，速度是用户最直观的体验。
+    # 想要「质量优先」时把它设 True，同时超时会自动切到 llm_timeout_thinking（长得能等完）。
+    llm_enable_thinking: bool = False
     # 单次 LLM 调用的超时（秒）。不设的话模型挂起时任务会永远 running —— 有了它才会
     # 快速失败并走到「失败显式上报」那条路（权限/参数错误本来就是快速失败，不受影响）。
+    # 120s 的前提是「关思考」：实测最慢的节点（analyzer 吐 ~2000 字符）约 18s，留了 6 倍余量。
     llm_timeout: int = 120
+    # 开启思考时用的超时：开思考后单次调用可能要好几分钟，120s 会把「慢」变成「失败」
+    # （这正是本项目踩过的坑——超时设得比最慢节点的 p99 还短，等于人为制造失败）。
+    llm_timeout_thinking: int = 600
 
     # ---- 搜索 ----
     tavily_api_key: str = ""

@@ -52,6 +52,7 @@ START → planner（拆子任务）
 - **token 成本是最高优先级**（用户反复强调）：日常验证只跑离线单测（ruff + pytest，零 LLM 调用），**绝不自动跑真调研/评测 E2E**。真调研只在用户明确要求时跑。
 - **`config/.env` 含真实密钥**（DASHSCOPE_API_KEY/TAVILY_API_KEY/LANGFUSE/ADMIN_TOKEN 四件套）：gitignored，绝不提交；`.dockerignore` 也排除它。部署靠 `docker-compose.yml` 的 `env_file: ./config/.env` 运行时注入。
 - **模型分级已定案**（在 `config/settings.py`，只有这里改）：planner/extractor/writer 用 **`qwen3.8-flash`**、analyzer/judge 用 **`qwen3.8-max`**。依据是「调用次数 + 串行还是并行」：extractor 每来源一次是 token 大头走 flash，串行节点（planner/analyzer/writer）每次耗时都直接叠进用户等待，所以 writer 走 flash（实测 max ~104s → flash ~40s，质量可接受）、analyzer 只调 1 次但质量关键故不降级。**曾经「max 档 403」的旧结论已作废**（现在 max 可正常调用）。`llm_searcher` 是死配置（searcher 只走 Tavily，全仓库无人调 `get_searcher_llm`）。`llm_timeout=120` 是必需的：不设超时模型挂起会让任务永远 running、进度条永远卡住。
+- **思考模式默认关、超时按 p99 定**（`app/models/llm.py` 的 `_chat()` + `tests/test_llm.py` 钉住）：百炼 qwen3.x 默认开「显式思考」，实测同任务慢 8 倍（13.9 vs 114 字符/s），所以 `extra_body={"enable_thinking": False}`；想开就设 `LLM_ENABLE_THINKING=true`，超时会自动切到 `llm_timeout_thinking`（600s）。**超时值必须大于最慢节点的 p99**（analyzer 关思考 ~18~31s，120s 够用），`max_retries` 固定 **1**——超时重试不掉，2 次重试 = 3 倍等待。改这几个值前先看 `tests/test_llm.py`。
 - **报告默认 800~1000 字**：writer 字数统计已改为「去掉 URL/语法符号的有效正文」，不要用 `len(md)` 直接判断（会把 URL 算进去虚报 2403 字）。
 - **失败必须显式上报**：任何节点降级返回空结果时都要写 `errors` 通道；报告为空 = 这次调研失败，`status="failed"` + `error=原因` 落盘落库，前端/CLI/MCP 都要显示原因。**绝不允许「状态=完成、点开是空白」**。
 - **不要建立系统内对话记忆**：系统是 MCP 工具，用户记忆由外层 AI（Cursor/Claude）持有；系统只记自己的产出（SQLite 历史 + Redis 缓存）。
@@ -67,6 +68,8 @@ START → planner（拆子任务）
 - **静态资源不自动路由**：FastAPI 只路由显式声明的路径。`index.html` 抽出的 `style.css` 必须 `app.mount("/static", StaticFiles(...))` 才能访问（link 用 `/static/style.css`）。
 - **docker compose 的 `env_file` 只在容器创建时注入**：改 `config/.env`（如 ADMIN_TOKEN）后要 `docker compose up -d`（自动重建）才生效，`docker compose restart` 不会重新读。
 - **节点降级吞异常会伪装成成功**：analyzer 的模型 403 曾只 `logger.warning` 一句（无堆栈）就返回空 key_points，writer 见无关键点直接跳过 → report 空、状态却是 `written`，历史里留一条点开空白的记录。修法见上「失败必须显式上报」；排查 AI 调用问题先 `docker compose logs -f app`（现在异常都是 `logger.exception`，带完整堆栈和模型名）。
+- **超时设得比最慢节点的 p99 还短 = 人为制造失败，重试会把它放大 3 倍**：真实故障链——`timeout=120`（小于 analyzer 开思考所需的 ~144s）+ `max_retries=2` → 两次调研都恰好在 **362s（3×120s）** 报 `APITimeoutError`。看着像「模型坏了/被限流」，其实是配置把它打死；同一模型此前不设超时时跑通过更大的输入（DB 里有反例），这才是定位的关键证据。修法：关思考（8 倍提速）+ 超时按 p99 留 4~6 倍余量 + `max_retries=1`。
+- **百炼 qwen3.x 默认开「显式思考」，实测慢 8 倍**：同模型同任务，开 90.5s/1260 字符（13.9 字符/s）、关 8.6s/979 字符（114 字符/s）。`_chat()` 通过 `extra_body={"enable_thinking": False}` 关掉（OpenAI 兼容端点不认顶层参数）。调研是「抽取+归纳」型任务，不需要长链思考；排查「某个模型突然很慢」先量吞吐，别先怀疑限流。
 - **`logger.exception` 会让 `# noqa: BLE001` 变成多余**：ruff 的 blind-except 豁免「用 `logger.exception` 记录堆栈」的处理器，所以把 `logger.warning` 升级成 `logger.exception` 后，原本必需的 `# noqa: BLE001` 会被 RUF100 报 unused（`ruff check` 会红）——此时直接删掉 noqa，别留着。
 - **流式事件是「节点跑完」才到，不是「节点开始」**：`stream_mode="updates"` 里 `{'analyzer': ...}` 到达时 analyzer 已结束、writer 正在跑。所以阶段要按「下一步该谁跑」切（analyzer 事件 → stage=writing），否则用户会看到「正在交叉分析」其实在等写报告。串行阶段的完成比例也要按**本阶段**耗时算（`_stage_elapsed()`），用全程 elapsed 会让刚落进 writing 的阶段直接冲到 90%。
 - **给 service 加可选回调时别改默认路径**：`_run_graph` 只在 `on_progress` 非 None 时走 `graph.stream`，否则保持 `graph.invoke`——CLI/MCP 与 4 个 patch `graph.invoke` 的测试因此零改动。改这类「加功能」时优先用「可选参数 + 保留原路径」而不是全局替换实现。
