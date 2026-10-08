@@ -64,6 +64,24 @@
 | 重新构建（改代码后） | `docker compose up -d --build` |
 | 停止 | `docker compose down`（数据在 ./data 卷里不丢） |
 
+## 构建卡住？先看这两条（国内服务器）
+
+Dockerfile 已刻意避开所有国际链路：不用 `COPY --from=ghcr.io/astral-sh/uv`（拉 uv 镜像）、
+不用 `curl https://astral.sh/uv/install.sh`（它的脚本最终还是去 GitHub releases 下二进制）、
+也不 `apt-get` 装 curl。uv 改为从**清华 PyPI 源**装 wheel，`uv sync` 也走同一个源。
+
+坑：uv **不认 `PIP_INDEX_URL`**（只设它，uv 仍旧去 pypi.org 拉，等于白配），
+换源必须设 `UV_DEFAULT_INDEX`。
+
+若仍然卡住，按顺序排查：
+
+1. **服务器上的代码是不是最新的**：`git pull`。
+   旧版 Dockerfile 里写的是 `COPY --from=ghcr.io/astral-sh/uv`，ghcr.io 在国内基本拉不动
+   —— 现象是构建停在 `FROM ghcr.io/astral-sh/uv:latest`，几十秒才下十几 MB。
+2. **基础镜像在不在本机**：`docker images | grep python`。
+   没有 `python:3.12-slim` 就可能卡在 Docker Hub，需要给 Docker 配镜像加速器。
+3. 看清卡在哪一层：构建日志里的 `[N/6]` 步骤号 + 那句命令，比「很慢」有用得多。
+
 ## 进阶（可选）
 
 - **HTTPS**：装 Caddy 做反向代理，几行配置自动配证书：
