@@ -64,23 +64,35 @@
 | 重新构建（改代码后） | `docker compose up -d --build` |
 | 停止 | `docker compose down`（数据在 ./data 卷里不丢） |
 
-## 构建卡住？先看这两条（国内服务器）
+## 构建卡住？先看这几条（国内服务器）
 
 Dockerfile 已刻意避开所有国际链路：不用 `COPY --from=ghcr.io/astral-sh/uv`（拉 uv 镜像）、
 不用 `curl https://astral.sh/uv/install.sh`（它的脚本最终还是去 GitHub releases 下二进制）、
-也不 `apt-get` 装 curl。uv 改为从**清华 PyPI 源**装 wheel，`uv sync` 也走同一个源。
+也不 `apt-get` 装 curl。uv 从**清华 PyPI 源**装 wheel；依赖下载则在构建时用 `sed`
+把 `uv.lock` 里的 host 换成清华源。
 
-坑：uv **不认 `PIP_INDEX_URL`**（只设它，uv 仍旧去 pypi.org 拉，等于白配），
-换源必须设 `UV_DEFAULT_INDEX`。
+**三个换源相关的坑**（都实测过，别再踩）：
+
+1. **uv 不认 `PIP_INDEX_URL`** —— 只设它时 uv 仍旧请求 pypi.org（DEBUG 日志里写着
+   `https://pypi.org/simple/…`）。uv 自己的变量是 `UV_DEFAULT_INDEX`。
+2. **但光设 `UV_DEFAULT_INDEX` 对 `uv sync --frozen` 也没用** —— `uv.lock` 里每个包都带
+   **绝对下载 URL + hash**（1456 处 `files.pythonhosted.org`），`--frozen` 就是照单下载，
+   任何 index 设置都管不着。实测：设了 `UV_DEFAULT_INDEX` 仍是 256 个请求打 CDN、0 个走镜像。
+   现象就是构建日志里几行 `Downloading lxml…` **几百秒一动不动**，一个包都下不完。
+   → 所以 Dockerfile 里 `uv sync` 之前先 `sed` 换掉 lock 里的 host（清华源镜像同一套
+   `/packages/` 路径、字节一致，hash 照样校验通过）。
+3. 换源后依赖层从「几百秒卡死」变成 **13 秒**（本项目实测）。若哪天又变慢，先怀疑这条。
 
 若仍然卡住，按顺序排查：
 
 1. **服务器上的代码是不是最新的**：`git pull`。
-   旧版 Dockerfile 里写的是 `COPY --from=ghcr.io/astral-sh/uv`，ghcr.io 在国内基本拉不动
-   —— 现象是构建停在 `FROM ghcr.io/astral-sh/uv:latest`，几十秒才下十几 MB。
+   旧版 Dockerfile 写的是 `COPY --from=ghcr.io/astral-sh/uv`，ghcr.io 在国内基本拉不动
+   —— 现象是构建停在 `FROM ghcr.io/astral-sh/uv:latest`，1292s 才下 11MB。
 2. **基础镜像在不在本机**：`docker images | grep python`。
    没有 `python:3.12-slim` 就可能卡在 Docker Hub，需要给 Docker 配镜像加速器。
-3. 看清卡在哪一层：构建日志里的 `[N/6]` 步骤号 + 那句命令，比「很慢」有用得多。
+3. **区分「卡住」和「慢」**：看构建日志有没有新行。同一个数字反复刷 = 卡住；
+   每个包一行 `Downloading xxx` = 正常推进（2 核机上依赖层几十秒属正常）。
+4. 看清卡在哪一层：日志里的 `[N/6]` 步骤号 + 那句命令，比「很慢」有用得多。
 
 ## 进阶（可选）
 

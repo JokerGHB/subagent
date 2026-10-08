@@ -13,17 +13,26 @@ WORKDIR /app
 # 预编译字节码 + 复用宿主缓存（uv 的安装缓存）
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
 
-# uv 换源必须用 UV_DEFAULT_INDEX —— **uv 不认 PIP_INDEX_URL**：
-# 只设 PIP_INDEX_URL 时 uv 仍旧去 pypi.org 拉（实测 verify），等于白配。
-# 改成 UV_DEFAULT_INDEX 后 uv sync 才真的走清华源；锁文件里记录的 registry
-# 是 pypi.org 也不影响，--frozen 照样通过（实测）。
+# uv 的换源变量（**uv 不认 PIP_INDEX_URL**：只设它时 uv 仍旧请求 pypi.org，
+# 实测 DEBUG 里明明白白写着 https://pypi.org/simple/…，等于白配）。
+# 但注意：光设这个对下面这层**不管用** —— 真正起作用的是那行 sed，见下。
 ENV UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 # 慢链路下 uv 默认 30s 请求超时容易让整层失败重来，放宽一点
 ENV UV_HTTP_TIMEOUT=120
 
 # 先拷依赖清单并安装 → 后续改源码不会让这层缓存失效
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# 关键一步：uv.lock 里每个包都带着**绝对下载 URL + hash**
+# （1456 处 files.pythonhosted.org）和 registry 地址（137 处 pypi.org/simple）。
+# `uv sync --frozen` 是照单下载这些 URL —— 所以只设 UV_DEFAULT_INDEX 没用：
+# 实测仍是 256 个请求打 CDN、0 个走镜像，国内服务器就卡在这（现象：构建日志里
+# 几行 "Downloading lxml…" 几百秒一动不动，一个包都下不完）。
+# 把 host 换成清华源即可：它镜像同一套 /packages/ 路径、文件字节一致，
+# 所以 lock 里的 hash 照样校验通过（实测 256/256 全走清华源、依赖可导入）。
+# 只改镜像里的这份副本，不动仓库里的 uv.lock。
+RUN sed -i -e 's|https://files.pythonhosted.org|https://pypi.tuna.tsinghua.edu.cn|g' \
+           -e 's|https://pypi.org/simple|https://pypi.tuna.tsinghua.edu.cn/simple|g' uv.lock \
+ && uv sync --frozen --no-dev
 
 # 再拷源码（含 app/、config/、run.py）
 COPY . .
